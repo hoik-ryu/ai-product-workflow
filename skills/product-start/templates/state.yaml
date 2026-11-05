@@ -1,0 +1,45 @@
+# /product-start(ai-product-workflow)가 관리하는 파일입니다. 상태 머신을 이해하는 경우에만 직접 수정하세요.
+schema_version: 1
+workflow: ai-product-workflow
+milestone: 1
+
+project:
+  name: ""            # 짧은 제품 이름
+  idea: ""            # 아이디어 원문 그대로
+  language: "ko"      # 산출물 언어. 기본 ko, 사용자가 명시한 경우에만 변경 (예: en)
+  created_at: ""      # ISO 8601
+
+current_stage: discovery   # discovery | planning | design
+
+stages:
+  discovery:
+    status: in_progress    # in_progress | awaiting_approval | approved
+    revision: 0
+    interview_round: 0
+    artifacts:
+      - docs/planning/01-discovery.md
+    approved:
+      revision: null
+      at: null
+      hashes: {}           # { 경로: sha256 }
+
+  planning:
+    status: locked         # locked | not_started | in_progress | awaiting_approval | approved | outdated
+    revision: 0
+    based_on_discovery_revision: null
+    artifacts:
+      - docs/planning/02-prd.md
+      - docs/planning/03-user-stories.md
+      - docs/planning/04-user-flows.md
+      - docs/planning/05-acceptance-criteria.md
+    artifacts_done: []     # 현재 revision 사이클에서 작성을 마친 파일
+    approved:
+      revision: null
+      at: null
+      hashes: {}
+
+  design:
+    status: locked         # locked | not_started  (Milestone 2 이후. planning 승인으로만 잠금 해제)
+
+history: []
+  # - { at: "", stage: discovery, event: started | submitted | changes_requested | approved | reopened | outdated | generated, revision: 0, note: "" }
