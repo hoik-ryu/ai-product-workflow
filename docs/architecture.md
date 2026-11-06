@@ -3,7 +3,7 @@
 ## 범위
 
 아이디어 → Discovery → 승인 → Planning → 승인까지만 다룹니다.
-Figma MCP, Design System, Boilerplate, 웹 UI, 서버, DB, 별도 Orchestrator는 포함하지 않습니다.
+Figma MCP, Design System, 웹 UI, 서버, DB, 별도 Orchestrator는 포함하지 않습니다. 보일러플레이트 적용은 별도 Skill인 `/product-init`이 담당합니다(아래 섹션).
 
 ## 구성
 
@@ -38,6 +38,49 @@ Figma MCP, Design System, Boilerplate, 웹 UI, 서버, DB, 별도 Orchestrator�
 - **추적성**: `GOAL/PRB → FR → US → FLOW → AC`. Planning 제출 전에 누락 점검 결과를 05 문서에 기록합니다. ID는 재사용하거나 재번호화하지 않습니다.
 - **파일 안전**: 기존 산출물을 수정할 때는 먼저 설명하고 확인을 받은 뒤 씁니다. Git으로 추적되고 미커밋 변경이 없는 파일은 백업하지 않습니다. 그 외에는 `.ai-workflow/backup/<file>` 단일 슬롯에 백업하며, 같은 파일의 이전 백업은 덮어씁니다. Skill은 Git 이력을 바꾸는 명령을 실행하지 않습니다.
 - **언어**: 문서, 템플릿, Skill 지시문은 한국어로 작성합니다. 산출물은 기본 한국어(`project.language: ko`)이며, 사용자가 다른 언어를 명시하면 그 언어로 작성합니다. 파일명, Skill 이름, YAML 키·상태값, front matter 키, 요구사항 ID, 우선순위 값(Must/Should/Could)은 영어로 유지합니다.
+
+## `/product-init`: 보일러플레이트 적용
+
+`/product-start`와 분리된 독립 Skill입니다. `/product-start`의 상태 머신과 승인 규칙은 바꾸지 않습니다.
+
+```
+[ai-product-workflow]                       [보일러플레이트 저장소: 별도]
+ skills/product-init/                        boilerplate.manifest.toml   적용 계약(복사·치환·병합·검증)
+   SKILL.md           절차·승인                   │ 태그 vX.Y.Z → 커밋 SHA
+   reference/         적용 정책·검증·manifest 스키마  ▼ 프로젝트 밖 임시 디렉터리로 얕은 클론
+   scripts/product_init.py  분류·복사·해시·검증 ──▶ [제품 저장소]
+                                                  .ai-workflow/state.yaml        /product-start 소유 · 읽기 전용
+                                                  .ai-workflow/boilerplate.json  /product-init 소유
+                                                  docs/planning/                 보호 · 읽기 전용
+                                                  frontend/ backend/ ...         추가 전용
+```
+
+- **역할 분리**
+  - 보일러플레이트는 manifest로 자신을 기술합니다.
+  - 엔진은 안전하게 적용하는 방법만 압니다. 특정 기술 스택을 모르며, 보일러플레이트 소스를 포함하지 않습니다.
+- **상태 소유권**
+  - 각 Skill은 자기 상태 파일만 씁니다. `/product-init`은 `state.yaml`과 `docs/planning/`을 읽기만 합니다.
+  - 그래서 `/product-start`의 교차 검증은 init 적용 후에도 그대로 통과합니다.
+- **게이트**
+  - discovery와 planning이 `approved`이고, 01–05가 승인 해시와 일치하며, planning이 최신 discovery를 기준으로 해야 합니다. 하나라도 어긋나면 차단합니다.
+  - design 승인은 요구하지 않습니다. design과 병행할 수 있습니다.
+- **결정적 처리**
+  - 파일 분류, 복사, SHA-256 기록, 승인 plan id 확인, Docker 명령 구성은 표준 라이브러리 스크립트가 수행합니다.
+  - LLM은 설명, 승인 수집, 스크립트 호출만 맡습니다.
+- **상태 흐름**: `planned → (승인) → applying → applied → verified | verify_failed`
+  - 재개할 때마다 `files_done`/`merges`의 SHA-256, 파일 존재 여부, 계획 밖 변경을 교차 검증합니다.
+- **Docker 격리**
+  - 모든 Docker 명령은 `docker compose -p <slug>-init-verify --env-file .env.example` 형태로 실행하고, 검증 전용 포트를 씁니다.
+  - 정리는 `down --remove-orphans`만 합니다.
+  - 볼륨 삭제는 다음 세 조건을 모두 만족할 때만 합니다: 상태 파일에 그 프로젝트명이 기록되어 있고, 볼륨 라벨이 일치하며, 사용자가 명시적으로 확인한 경우.
+
+### 이후 Skill과의 연결
+
+```
+/product-start ── planning approved ──┬──▶ /product-design (state.yaml의 design 단계)
+                                      └──▶ /product-init   (boilerplate.json: verified)
+/product-build ◀── planning approved + 해시 일치 + boilerplate.json verified (+ UI 스토리가 있으면 design approved)
+```
 
 ## 확장 지점(Milestone 2 이후)
 

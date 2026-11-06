@@ -1,0 +1,104 @@
+# boilerplate.manifest.toml — /product-init 적용 계약 (ai-product-workflow)
+#
+# 이 파일은 fullstack-boilerplate 저장소 루트에 두는 예시입니다.
+# 보일러플레이트가 "무엇을 복사하고, 무엇을 치환하고, 어떻게 검증하는지"를 기술합니다.
+# 스키마와 검증 규칙: skills/product-init/reference/manifest-schema.md
+
+schema_version = 1
+name = "fullstack-boilerplate"
+version = "1.0.0"              # Git 태그 v1.0.0 (또는 1.0.0)과 일치해야 합니다
+
+[apply]
+# 제품 저장소에 복사하지 않을 경로(glob). `.env`, `.env.*`(*.example 제외)와 이 manifest는 항상 제외됩니다.
+exclude = []
+
+# 프로젝트 이름 치환: 지정한 파일에서만, 정확한 문자열을 바꿉니다.
+[[substitutions]]
+from = "fullstack-boilerplate"
+to = "{project_slug}"
+files = [
+  ".env.example",
+  "backend/.env.example",
+  "docker-compose.yml",
+  "backend/app/core/config.py",
+  "backend/pyproject.toml",
+]
+
+[[substitutions]]
+from = "Fullstack Boilerplate"
+to = "{project_title}"
+files = ["frontend/index.html", "frontend/src/pages/HomePage.tsx"]
+
+# 기존 제품 파일과 충돌할 때 사용자가 승인하면 적용할 수 있는 병합 전략.
+# 전략이 없는 충돌 파일은 보고만 하고 사용자가 직접 처리합니다.
+[[merge]]
+path = ".gitignore"
+strategy = "append-missing-lines"
+required = [".env", ".env.*", "!.env.example", "node_modules/", "dist/", ".venv/", "__pycache__/",
+            ".pytest_cache/", ".ruff_cache/", ".mypy_cache/"]
+
+[[merge]]
+path = "CLAUDE.md"
+strategy = "append-section"
+section_title = "개발 규칙 (fullstack-boilerplate)"
+
+[[merge]]
+path = "README.md"
+strategy = "append-section"
+section_title = "개발 환경 (fullstack-boilerplate)"
+
+[verify]
+env_file = ".env.example"      # Compose 변수 파일. .env를 만들지 않고 검증합니다.
+# 검증이 만드는 산출물. fe/be 검증 전에 Git에서 무시되는지 확인하고, 무시되지 않으면 시작하지 않습니다.
+ignored_paths = ["frontend/node_modules", "frontend/dist", "backend/.venv",
+                 "backend/.pytest_cache", "backend/.ruff_cache", "backend/.mypy_cache"]
+
+# 검증 전용 포트. 실행 중인 다른 프로젝트(기본 5432/8000/5173)와 겹치지 않게 합니다.
+[verify.ports]
+POSTGRES_PORT = 55432
+BACKEND_PORT = 58000
+FRONTEND_PORT = 55173
+
+[verify.env]
+APP_ENV = "verify"
+CORS_ORIGINS = "http://localhost:55173"
+VITE_API_BASE_URL = "http://localhost:58000"
+
+# {compose}는 스크립트가 `docker compose -p <slug>-init-verify --env-file <env_file>`로 확장합니다.
+# Docker 명령은 반드시 {compose}로 시작해야 하며, 볼륨 삭제·prune 명령은 허용되지 않습니다.
+[verify.stages]
+fe = [
+  { run = "pnpm install --frozen-lockfile", cwd = "frontend" },
+  { run = "pnpm lint", cwd = "frontend" },
+  { run = "pnpm typecheck", cwd = "frontend" },
+  { run = "pnpm test", cwd = "frontend" },
+  { run = "pnpm build", cwd = "frontend" },
+]
+be = [
+  { run = "uv sync --frozen", cwd = "backend" },
+  { run = "uv run ruff check .", cwd = "backend" },
+  { run = "uv run ruff format --check .", cwd = "backend" },
+  { run = "uv run mypy app tests", cwd = "backend" },
+  { run = "uv run pytest", cwd = "backend" },
+]
+db = [
+  { run = "{compose} up -d --wait db" },
+  { run = "{compose} run --rm --build backend alembic upgrade head" },
+  { run = "{compose} run --rm backend alembic check" },
+  { run = "{compose} run --rm backend alembic downgrade base" },
+  { run = "{compose} run --rm backend alembic upgrade head" },
+  { run = "{compose} run --rm backend pytest -m db" },
+]
+smoke = [
+  { run = "{compose} up -d --build --wait" },
+]
+
+# smoke 단계 HTTP 확인 (재시도 포함)
+[[verify.http]]
+url = "http://localhost:{BACKEND_PORT}/health"
+expect_status = 200
+contains = "\"database\":\"ok\""
+
+[[verify.http]]
+url = "http://localhost:{FRONTEND_PORT}/"
+expect_status = 200

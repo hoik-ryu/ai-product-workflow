@@ -147,3 +147,7 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Python bytecode cache (product-init 스크립트·테스트 실행 시 생성)
+__pycache__/
+*.py[cod]

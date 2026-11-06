@@ -4,7 +4,7 @@
 
 Claude Code Skill로 자연어 제품 아이디어를 **Product Discovery → 사용자 승인 → Product Planning(PRD, User Story, User Flow, Acceptance Criteria) → 사용자 승인**까지 연결합니다.
 
-> 현재 범위: **Milestone 1 (아이디어 → PRD)**. Figma 디자인, Design System, Boilerplate, 구현 단계는 이후 마일스톤에서 다룹니다.
+> 현재 범위: **Milestone 1 (아이디어 → PRD)** + **`/product-init`(승인된 기획 → 공통 보일러플레이트 적용·검증)**. Figma 디자인, Design System, 기능 구현 단계는 이후 마일스톤에서 다룹니다.
 
 ## 특징
 
@@ -22,8 +22,15 @@ skills/product-start/
   SKILL.md                 진입점(절차·게이트·규칙)
   reference/               state-machine, file-safety, id-conventions, interview-guide
   templates/               state.yaml, 01-discovery … 05-acceptance-criteria
+skills/product-init/
+  SKILL.md                 진입점(사전 점검·적용 승인·충돌·검증)
+  reference/               apply-policy, verify, manifest-schema
+  scripts/product_init.py  결정적 보조 스크립트(Python 3.11+, 표준 라이브러리만)
+  templates/               boilerplate.manifest.example.toml
 docs/architecture.md       설계
-tests/scenarios.md         테스트 시나리오와 실행 기록
+tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
+tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
+tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
 ```
 
 ## 설치(제품 프로젝트에서 사용)
@@ -87,3 +94,30 @@ docs/planning/05-acceptance-criteria.md
 ```
 
 산출물은 AI가 생성한 초안입니다. 승인 전에 반드시 사람이 검토해 주세요. 외부에 공유하기 전에는 기밀 정보나 개인정보가 들어 있지 않은지 확인해 주세요.
+
+## `/product-init`: 보일러플레이트 적용
+
+Planning이 승인된 제품 저장소에 공통 보일러플레이트(예: fullstack-boilerplate)를 **태그와 커밋 SHA로 고정**해서 **추가 전용**으로 적용하고 검증합니다.
+
+**사전 준비**
+- 보일러플레이트 저장소 루트에 `boilerplate.manifest.toml`이 있고(스키마: [manifest-schema.md](skills/product-init/reference/manifest-schema.md)), SemVer 태그(예: `v1.0.0`)가 푸시되어 있어야 합니다.
+- 제품 저장소에서 Planning이 승인돼 있고, 커밋되지 않은 변경이 없어야 합니다.
+- Skill 연결은 `/product-start`와 같은 방식입니다: `ln -s "$ENGINE/skills/product-init" .claude/skills/product-init`. 엔진 경로 읽기 허용도 같습니다. 보조 스크립트 실행에는 `python3`(3.11 이상)가 필요합니다.
+
+**사용법**
+```text
+/product-init git@github.com:<owner>/fullstack-boilerplate.git v1.0.0
+```
+1. 출처(태그 → 커밋 SHA)를 확인하고, 프로젝트 이름(slug)과 제목을 정합니다.
+2. 적용 계획을 검토합니다. 추가 / 동일 / 충돌 / 제외 / 보호 경로와 필수 설정 누락이 표시됩니다. **적용 승인**을 하고, 필요하면 전용 브랜치 생성도 승인합니다.
+3. 충돌 파일(README.md, .gitignore 등)은 덮어쓰지 않습니다. 파일별로 승인한 경우에만 병합합니다.
+4. FE / BE / DB / Smoke 검증을 단계별로 확인한 뒤 실행합니다. Docker 검증은 `<slug>-init-verify`라는 별도 Compose 프로젝트로 실행하고, 정리할 때 볼륨을 지우지 않습니다.
+5. 중단됐다면 인자 없이 `/product-init`을 실행하면 이어서 진행합니다. 결과는 직접 검토한 뒤 커밋합니다.
+
+제품 저장소에 생성·변경되는 것:
+```
+.ai-workflow/boilerplate.json    출처(저장소·태그·SHA), 계획, 승인, 적용 파일 SHA-256, 병합, 검증 결과
+(보일러플레이트 파일)             추가 전용 — 기존 파일·.ai-workflow/state.yaml·docs/planning/은 변경하지 않음
+```
+
+`boilerplate.json`에는 스냅샷과 검증 로그의 로컬 임시 경로가 기록됩니다. 보일러플레이트를 로컬 경로로 지정했다면 그 경로도 기록됩니다. 커밋 전에 공유해도 되는 내용인지 확인해 주세요.
