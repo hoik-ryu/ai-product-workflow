@@ -4,7 +4,7 @@
 
 Claude Code Skill로 자연어 제품 아이디어를 **Product Discovery → 사용자 승인 → Product Planning(PRD, User Story, User Flow, Acceptance Criteria) → 사용자 승인**까지 연결합니다.
 
-> 현재 범위: **Milestone 1 (아이디어 → PRD)** + **`/product-init`(승인된 기획 → 공통 보일러플레이트 적용·검증)**. Figma 디자인, Design System, 기능 구현 단계는 이후 마일스톤에서 다룹니다.
+> 현재 범위: **`/product-start`(아이디어 → PRD)**, **`/product-init`(승인된 기획 → 공통 보일러플레이트 적용·검증)**, **`/product-design`(승인된 기획 → 화면 기획·UX 설계·정적 UI 프리뷰 → 승인)**. 기능 구현(`/product-build`)은 이후 단계에서 다룹니다.
 
 ## 특징
 
@@ -27,10 +27,17 @@ skills/product-init/
   reference/               apply-policy, verify, manifest-schema
   scripts/product_init.py  결정적 보조 스크립트(Python 3.11+, 표준 라이브러리만)
   templates/               boilerplate.manifest.example.toml
+skills/product-design/
+  SKILL.md                 진입점(UX Planning → UX 설계 → UI 프리뷰 → 승인)
+  reference/               design-state, ux-planning, ux-spec, review-checklist, preview
+  scripts/product_design.py  결정적 보조 스크립트(Python 3.11+, 표준 라이브러리만)
+  templates/               00-ux-decisions … 06-preview-review, preview/(Vite+React 프리뷰 앱)
 docs/architecture.md       설계
 tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
 tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
 tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
+tests/design-scenarios.md  /product-design 테스트 시나리오와 실행 기록
+tests/product_design_test.py /product-design 스크립트 테스트(자체 완결형): python3 tests/product_design_test.py
 ```
 
 ## 설치(제품 프로젝트에서 사용)
@@ -121,3 +128,33 @@ Planning이 승인된 제품 저장소에 공통 보일러플레이트(예: full
 ```
 
 `boilerplate.json`에는 스냅샷과 검증 로그의 로컬 임시 경로가 기록됩니다. 보일러플레이트를 로컬 경로로 지정했다면 그 경로도 기록됩니다. 커밋 전에 공유해도 되는 내용인지 확인해 주세요.
+
+## `/product-design`: 화면 기획 → UX 설계 → UI 프리뷰
+
+Planning이 승인된 제품 저장소에서 화면 단위 기획과 설계를 진행하고, 실제 화면을 정적 프리뷰로 확인한 뒤 승인합니다.
+
+**사전 준비**
+- 제품 저장소에서 Planning이 승인돼 있고 커밋되지 않은 변경이 없어야 합니다. `/product-init` 적용 여부와는 무관합니다(병행 가능).
+- Skill 연결: `ln -s "$ENGINE/skills/product-design" .claude/skills/product-design` (엔진 경로 읽기 허용은 다른 Skill과 같음)
+- 프리뷰 빌드에 Node 20.19 이상과 pnpm이 필요합니다(의존성 설치에 네트워크 사용).
+
+**사용법**
+```text
+/product-design
+```
+1. **UX Planning**: 기획에서 아직 정해지지 않은 화면 기획 항목을 기능별로 2–4개씩 묻습니다. 질문마다 권장안과 근거가 있습니다. "알아서 해줘", "모르겠어요"도 괜찮습니다. 기획 범위를 바꾸는 요청은 결정하지 않고 기획 재검토 대상(PF)으로 남깁니다. 끝나면 **UX 결정 확정**.
+2. **UX 설계**: IA와 화면 목록을 먼저 보여 주고 **구조 확인**을 받은 뒤, 화면별 명세(상태 6종 포함)·화면 흐름·컴포넌트·추적성을 만들어 **UX 설계 승인**을 받습니다.
+3. **UI 프리뷰**: `design-preview/`에 mock 데이터 기반 정적 프리뷰를 만듭니다. `pnpm --dir design-preview dev` → http://localhost:55180/ 에서 화면·상태·폭별로 확인하고 화면별 피드백을 줍니다. 끝나면 **시각 디자인 승인**.
+4. 중단했다면 `/product-design`을 다시 실행하면 이어서 진행합니다. 결과는 직접 검토한 뒤 커밋합니다.
+
+제품 저장소에 생성되는 것:
+```
+.ai-workflow/design.json        디자인 상태(기준). state.yaml의 design: not_started는 "디자인 단계가 열림" 표시일 뿐입니다
+.ai-workflow/design-notes.md    인터뷰·피드백 원문
+.ai-workflow/backup/design/     (필요할 때만) 수정 전 백업
+docs/design/00-ux-decisions.md … 06-preview-review.md
+design-preview/                 정적 프리뷰(제품 코드 아님, 실제 API·인증 없음)
+```
+
+프리뷰는 시각 확인용이며 최종 제품 코드가 아닙니다. 실제 구현은 이후 `/product-build` 단계에서 `frontend/`에 합니다. Figma 파일은 자동으로 만들지 않으며, 필요하면 06 문서에 링크만 기록할 수 있습니다.
+

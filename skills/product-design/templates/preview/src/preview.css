@@ -1,0 +1,17 @@
+/* 프리뷰 셸 전용 스타일입니다(화면 디자인과 무관). */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, -apple-system, 'Apple SD Gothic Neo', sans-serif; color: var(--color-text); background: #e9ebef; }
+button { font: inherit; }
+.pv-root { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+.pv-nav { background: #fff; border-right: 1px solid #d5d9e0; padding: 12px; overflow-y: auto; max-height: 100vh; position: sticky; top: 0; }
+.pv-nav ul { list-style: none; margin: 0; padding: 0; }
+.pv-nav li button { width: 100%; text-align: left; padding: 8px; border: 0; background: none; border-radius: 6px; cursor: pointer; }
+.pv-nav li button[aria-current='true'] { background: #e3eaff; font-weight: 600; }
+.pv-badge { font-size: 12px; background: #fff4d6; border: 1px solid #f0d58a; padding: 6px 8px; border-radius: 6px; }
+.pv-id { font-size: 11px; color: #6b7280; font-family: ui-monospace, monospace; }
+.pv-main { padding: 12px; min-width: 0; }
+.pv-toolbar { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-bottom: 12px; }
+.pv-toolbar button { margin: 2px; padding: 6px 10px; border: 1px solid #c7ccd6; background: #fff; border-radius: 6px; cursor: pointer; }
+.pv-toolbar button[aria-selected='true'], .pv-toolbar button[aria-pressed='true'] { background: #1f2937; color: #fff; border-color: #1f2937; }
+.pv-stage { overflow-x: auto; }
+.pv-frame { margin: 0 auto; background: var(--color-bg); min-height: 640px; box-shadow: 0 2px 12px rgba(0,0,0,.12); overflow: hidden; }

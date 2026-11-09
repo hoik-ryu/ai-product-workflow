@@ -1,0 +1,13 @@
+/* docs/design/04-ui-system.md의 토큰을 CSS 변수로 옮깁니다. 값은 UX 설계 승인본과 같아야 합니다. */
+:root {
+  --color-bg: #ffffff;
+  --color-surface: #f5f6f8;
+  --color-text: #1a1a1a;
+  --color-text-muted: #5b6270;
+  --color-primary: #1f5eff;
+  --color-danger: #c62828;
+  --space-unit: 4px;
+  --radius-md: 8px;
+  --font-size-body: 16px;
+  --mobile-max: 480px;
+}

@@ -1,0 +1,26 @@
+{
+  "name": "design-preview",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "/product-design 정적 UI 프리뷰. 제품 코드가 아니며 실제 API·DB·인증을 쓰지 않습니다.",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "vite --port 55180",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.7"
+  }
+}

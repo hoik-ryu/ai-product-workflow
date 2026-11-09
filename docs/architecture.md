@@ -1,9 +1,9 @@
-# 아키텍처 — Milestone 1 (아이디어 → PRD)
+# 아키텍처
 
 ## 범위
 
-아이디어 → Discovery → 승인 → Planning → 승인까지만 다룹니다.
-Figma MCP, Design System, 웹 UI, 서버, DB, 별도 Orchestrator는 포함하지 않습니다. 보일러플레이트 적용은 별도 Skill인 `/product-init`이 담당합니다(아래 섹션).
+아이디어 → Discovery → 승인 → Planning → 승인까지는 `/product-start`가 다룹니다.
+보일러플레이트 적용은 `/product-init`, 화면 기획·설계·UI 프리뷰는 `/product-design`이 담당합니다(아래 섹션). 웹 UI, 서버, DB, 별도 Orchestrator는 포함하지 않습니다.
 
 ## 구성
 
@@ -74,16 +74,44 @@ Figma MCP, Design System, 웹 UI, 서버, DB, 별도 Orchestrator는 포함하�
   - 정리는 `down --remove-orphans`만 합니다.
   - 볼륨 삭제는 다음 세 조건을 모두 만족할 때만 합니다: 상태 파일에 그 프로젝트명이 기록되어 있고, 볼륨 라벨이 일치하며, 사용자가 명시적으로 확인한 경우.
 
+## `/product-design`: 화면 기획 → UX 설계 → UI 프리뷰
+
+`/product-start`·`/product-init`과 분리된 독립 Skill입니다. 두 Skill의 파일과 동작은 바꾸지 않습니다.
+
+```
+[ai-product-workflow]                          [제품 저장소]
+ skills/product-design/                         .ai-workflow/state.yaml        읽기만(planning 승인·해시, design locked 여부)
+   SKILL.md          단계·승인·피드백 규칙        docs/planning/                 읽기만
+   reference/        상태·인터뷰·설계·체크리스트·프리뷰   .ai-workflow/design.json       /product-design 소유(스크립트만 씀)
+   templates/        00–06 문서, preview/ 앱       .ai-workflow/design-notes.md   인터뷰 원문
+   scripts/product_design.py  게이트·전이·해시·추적성·프리뷰 경계 ─▶ docs/design/00–06    UX 결정·IA·화면·흐름·UI 시스템·추적성·프리뷰 검토
+                                                design-preview/                정적 프리뷰(Vite+React, mock 데이터, 제품 코드 아님)
+```
+
+| 내부 단계 | 산출물 | 승인 |
+|---|---|---|
+| UX Planning | 00 UX 결정(UXD/DQ/PF) + 인터뷰 원문 | UX 결정 확정 |
+| UX Specification | 01 IA, 02 화면 명세(상태 6종), 03 화면 흐름, 04 컴포넌트·토큰, 05 추적성 | 구조 확인(체크포인트) → UX 설계 승인 |
+| UI Preview | `design-preview/`(트리 해시) + 06 피드백 기록 | 시각 디자인 승인 |
+
+- **게이트**: planning `approved` + 01–05 해시 일치 + `state.yaml` design이 `locked`가 아님. 시작 시 기준(`based_on`: planning revision, 해시, 커밋)을 기록합니다.
+- **결정적 처리**: 상태 전이, 승인 revision·해시, 제출 후 변경 감지, ID 존재·커버리지(Must US, FLOW 단계, AC↔화면/비UI), 화면 상태 6종, 프리뷰 경계(fetch·frontend import 금지)와 빌드는 스크립트가 판정합니다. UX 적절성은 체크리스트와 사용자 승인으로 판단합니다.
+- **무효화**: UX Planning 재검토 → UX 설계·프리뷰 승인 무효. UX 설계 재검토 → 프리뷰 승인 무효. planning 변경 → T9 동안 차단, 재승인 후 `outdated` → `impact`(바뀐 ID와 참조 화면) → `rebase`.
+- **표시 정책**: `state.yaml`의 `design: not_started`는 "디자인 단계가 열림" 표시입니다. 디자인 진행 상태의 기준은 `design.json`이며, `/product-design`은 상태를 보고할 때 이 관계를 함께 알립니다.
+- **프리뷰와 제품 코드의 경계**: 프리뷰는 `design-preview/`에만 있고 실제 API·인증·비즈니스 로직이 없습니다. `frontend/`와 서로 import하지 않습니다. 실제 구현은 `/product-build`가 담당하며, 시각 디자인 승인 전에는 UI 구현 완료로 판단하지 않습니다.
+- **Figma**: 선택적 외부 참조(06 문서의 링크)만 지원합니다. 자동 생성은 하지 않습니다.
+
 ### 이후 Skill과의 연결
 
 ```
-/product-start ── planning approved ──┬──▶ /product-design (state.yaml의 design 단계)
+/product-start ── planning approved ──┬──▶ /product-design (design.json: approved)
                                       └──▶ /product-init   (boilerplate.json: verified)
-/product-build ◀── planning approved + 해시 일치 + boilerplate.json verified (+ UI 스토리가 있으면 design approved)
+/product-build ◀── planning approved + 해시 일치 + boilerplate.json verified
+                   + design.json approved(기준 planning 해시 = 현재 승인 해시)          ※ /product-build는 아직 없음
 ```
 
 ## 확장 지점(Milestone 2 이후)
 
-- `state.yaml`의 `stages`에 단계를 추가합니다. 후속 Skill(예: `/product-design`)은 `design.status == not_started`와 planning 승인 해시를 확인한 뒤 시작합니다.
+- 후속 Skill은 `/product-init`, `/product-design`처럼 **자기 상태 파일**을 두고, `state.yaml`과 다른 Skill의 상태 파일은 읽기만 합니다. 시작 조건은 planning 승인과 승인 해시입니다.
 - 템플릿과 reference는 단계별 Skill 폴더에 같은 방식으로 둡니다.
 - 배포는 `.claude-plugin/plugin.json`을 추가해 plugin 형태로 전환할 수 있습니다.
