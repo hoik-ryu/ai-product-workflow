@@ -1,0 +1,24 @@
+{
+  "schema": "design-theme/v1",
+  "name": "example-light",
+  "version": "1.0.0",
+  "note": "값은 예시입니다. 엔진 기본값이 아니며 프로젝트가 정합니다. 의미 토큰 이름은 승인된 04 문서에 있는 이름만 씁니다.",
+  "primitives": {
+    "green-700": "#0E6B4F",
+    "gray-900": "#1A1D23",
+    "white": "#FFFFFF"
+  },
+  "tokens": {
+    "color.action.primary": "{green-700}",
+    "color.action.onPrimary": "{white}",
+    "color.text.primary": "{gray-900}",
+    "color.focus.ring": "{green-700}",
+    "font.size.body": "16px",
+    "space.4": "16px",
+    "radius.md": "10px"
+  },
+  "css": {
+    "file": "design-preview/src/tokens.css",
+    "var_pattern": "--{dashed}"
+  }
+}

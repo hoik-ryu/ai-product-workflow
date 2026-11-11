@@ -49,7 +49,7 @@ pnpm --dir design-preview dev        # http://localhost:55180/#SCR-001/SCR-001-S
 
 - 피드백은 `06-preview-review.md`의 `FB-###` 표와 `design-notes.md`의 `## 프리뷰 피드백 N`에 기록합니다.
 - 시각 표현(크기, 간격, 색, 배치)은 프리뷰에서 반영합니다. 화면의 정보·행동·상태가 바뀌는 피드백은 **UX 설계 변경**이므로 `reopen --stage ux_spec`이 필요하고, 그러면 프리뷰 승인이 무효화됩니다. 먼저 이 영향을 설명하고 확인을 받습니다.
-- 토큰 값을 바꾸면 04 문서와 달라집니다. 토큰 변경은 UX 설계 변경으로 처리합니다.
+- 토큰 값을 바꾸면 04 문서와 달라집니다. 토큰 변경은 UX 설계 변경으로 처리합니다(v1 규칙, 그대로 유지). `impact --design`은 토큰 이름 변경(②)과 값 변경(③)을 구분해 보고하지만, 테마 게이트(WF-D03)가 생기기 전까지 ③도 `effective_stage: ux_spec`으로 계산합니다.
 - `preview-check`는 manifest의 `ux_spec_revision`이 승인된 UX 설계 revision과 같은지, manifest의 화면·상태가 02와 일치하는지 검사합니다.
 - 시각 디자인 승인은 `design-preview/` 트리 해시(node_modules·dist 제외)와 06 문서 해시를 기록합니다. 승인 후 프리뷰 파일이 바뀌면 `approved_modified`로 차단합니다.
 
@@ -57,3 +57,16 @@ pnpm --dir design-preview dev        # http://localhost:55180/#SCR-001/SCR-001-S
 
 - MVP는 Figma에 의존하지 않습니다. Figma 파일을 자동으로 만들지 않습니다.
 - 디자이너가 Figma로 작업했다면 06 문서의 "외부 디자인 참조" 표에 링크를 적을 수 있습니다. 승인 대상은 저장소의 문서와 프리뷰이며, 링크된 Figma가 승인 후 바뀌어도 감지하지 않습니다.
+
+## v2 design_direction 게이트가 켜진 프로젝트
+
+- 프리뷰를 시작·제출·승인하기 전에 Design Direction(07)이 승인되어 있어야 합니다.
+- `preview.manifest.json`에 `"design_direction_revision": <승인된 revision>`이 있어야 합니다(`preview-scaffold`가 게이트 켜짐이면 채움).
+- 화면별 `"vd": ["VD-001"]`로 적용한 시각 결정을 적을 수 있고, **승인된 VD만** 쓸 수 있습니다(`preview-check`가 검사).
+- 게이트가 꺼진 v2와 v1은 이 조건이 없습니다.
+
+## v2 테마 계약과 렌더러(WF-D03·D04)
+
+- 테마 파일이 `design-theme/v1` 계약이면 `src/tokens.css`는 테마 값(+ 테마에 없는 04 토큰은 04 값)과 같아야 합니다. `theme-check --print-css`의 `expected_css`를 그대로 씁니다. 프리뷰 검사가 변수 누락·값 불일치를 오류로 냅니다.
+- 게이트가 켜진 프로젝트는 06의 '렌더러' 절(사용 렌더러·전환 사유), figma·both 경로의 '외부 디자인 참조'·'렌더러 비교'를 채웁니다(`reference/design-state.md`의 렌더러 경로 표).
+

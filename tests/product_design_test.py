@@ -795,7 +795,11 @@ def main() -> int:
     dj = make_product(root, "broken")
     (dj / ".ai-workflow/design.json").write_text("{}\n")
     code, out = pi("status", *P(dj))
-    check("L2a 예상하지 못한 예외도 JSON 응답(internal_error)", code == 2 and out.get("error") == "internal_error", out)
+    check("L2a 구조가 깨진 상태 파일 → JSON 응답(invalid_state, WF-D05 구조 검증)", code == 2 and out.get("error") == "invalid_state", out)
+    (dj / ".ai-workflow/design.json").write_text(json.dumps({"stages": {k: {"status": "approved"} for k in ("ux_planning", "ux_spec", "preview")},
+                                                             "based_on": {"planning_hashes": {}}}) + "\n")
+    code, out = pi("status", *P(dj))
+    check("L2b 예상하지 못한 예외도 JSON 응답(internal_error)", code == 2 and out.get("error") == "internal_error", out)
     s_main = state(d)
     check("L6 구조 확인 기록에 쓰지 않는 해시 필드 없음(서명만)", all("hashes" not in (s_main["stages"]["ux_spec"].get("structure_confirmed") or {}) for _ in [0]), s_main["stages"]["ux_spec"].get("structure_confirmed"))
 

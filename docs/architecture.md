@@ -84,7 +84,7 @@
    SKILL.md          단계·승인·피드백 규칙        docs/planning/                 읽기만
    reference/        상태·인터뷰·설계·체크리스트·프리뷰   .ai-workflow/design.json       /product-design 소유(스크립트만 씀)
    templates/        00–06 문서, preview/ 앱       .ai-workflow/design-notes.md   인터뷰 원문
-   scripts/product_design.py  게이트·전이·해시·추적성·프리뷰 경계 ─▶ docs/design/00–06    UX 결정·IA·화면·흐름·UI 시스템·추적성·프리뷰 검토
+   scripts/product_design.py(+ pd_core·pd_theme·pd_impact)  게이트·전이·해시·추적성·프리뷰 경계 ─▶ docs/design/00–06    UX 결정·IA·화면·흐름·UI 시스템·추적성·프리뷰 검토
                                                 design-preview/                정적 프리뷰(Vite+React, mock 데이터, 제품 코드 아님)
 ```
 

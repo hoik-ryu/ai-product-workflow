@@ -4,6 +4,8 @@
 
 ## 준비
 
+> 자동 실행·판정: `tests/harness/product_start/run_regression.sh` (아래 절차를 임시 폴더에서 실행하고 `summarize.py`로 S01–S19 판정. `tests/harness/README.md`)
+
 ```bash
 mkdir -p /tmp/pw-test/.claude/skills && cd /tmp/pw-test && git init -q
 ln -s <engine>/skills/product-start .claude/skills/product-start

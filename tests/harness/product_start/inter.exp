@@ -1,0 +1,13 @@
+log_file -noappend [lindex $argv 0]
+cd [lindex $argv 1]
+proc pump {secs} { set timeout $secs; expect { -re {.+} { exp_continue -continue_timer } timeout {} eof {} } }
+spawn claude --permission-mode acceptEdits
+pump 6
+send "\033\[B"; pump 1; send "\r"
+pump 10
+send -- "/product-start 동네 도서관 좌석 예약 앱을 만들고 싶어요"; pump 2; send "\r"
+for {set i 0} {$i < 30} {incr i} {
+  pump 10; send "\r"
+  if {[file exists ".ai-workflow/discovery-notes.md"]} { pump 45; break }
+}
+send "/exit\r"; pump 3

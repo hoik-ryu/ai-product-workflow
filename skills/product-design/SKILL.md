@@ -14,8 +14,9 @@ disable-model-invocation: true
 - `reference/ux-spec.md`: UX 설계 문서 순서·ID·추적성 규칙
 - `reference/review-checklist.md`: UX·접근성 검토 체크리스트
 - `reference/preview.md`: 프리뷰 경계·위치·실행·피드백
-- `templates/00`–`06`: 문서 템플릿, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
-- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2)
+- `reference/change-impact.md`: 디자인 변경 영향 분류(`impact --design`, 다섯 유형·입력 형식·영향 계산)
+- `templates/00`–`07`: 문서 템플릿(07 Design Direction은 v2), `templates/theme.example.json`: v2 테마 계약 예시, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
+- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`를 불러옵니다(직접 실행하지 않음)
 
 호출 형식: `python3 $SKILL/scripts/product_design.py <명령> --project "$PWD" ...`
 
@@ -84,7 +85,7 @@ disable-model-invocation: true
 2. 토큰, mock 데이터, 화면 컴포넌트, registry, manifest를 작성합니다. `templates/06-preview-review.md`로 06 문서를 만들고 `done`.
 3. `preview-verify`가 통과할 때까지 고칩니다. 실패를 성공으로 보고하지 않습니다.
 4. 실행 명령과 주소(화면·상태별 링크 예시)를 안내하고 **화면별 피드백**을 요청하고 멈춥니다.
-5. 피드백은 06의 `FB` 표와 `design-notes.md`에 기록합니다. 시각 표현은 프리뷰에서 고치고(`preview-verify`, `done` 다시 실행), UX 설계 변경이 필요한 피드백은 영향(프리뷰 승인 무효화)을 설명하고 확인을 받은 뒤 `reopen --stage ux_spec`으로 처리합니다.
+5. 피드백은 06의 `FB` 표와 `design-notes.md`에 기록합니다. 반영 전에 피드백을 사실 목록으로 정리해 `impact --design --request <프로젝트 밖 파일>`로 유형과 영향을 확인합니다(`reference/change-impact.md`). 시각 표현은 프리뷰에서 고치고(`preview-verify`, `done` 다시 실행), UX 설계 변경이 필요한 피드백은 영향(프리뷰 승인 무효화)을 설명하고 확인을 받은 뒤 `reopen --stage ux_spec`으로 처리합니다.
 6. 피드백이 정리되면 `submit --stage preview` → **"시각 디자인 승인"**을 요청하고 멈춥니다. 승인하면 `approve --stage preview --revision N`.
 
 ## 5단계 — 수정 요청과 재검토
@@ -92,6 +93,8 @@ disable-model-invocation: true
 - 제출 후 수정 요청: `reopen --stage <s> --reason "<요청 요약>"` → 수정할 파일을 고치고, 그 단계의 **모든 산출물** front matter `revision`을 준비 중 revision으로 올린 뒤 각각 `done` → 다시 제출. UX 설계에서 화면 구성(IA 라우트 표와 화면 ID)이 바뀌지 않았다면 구조 확인을 다시 받지 않아도 됩니다(스크립트가 판단).
 - 승인 후 변경: 영향(하위 단계 승인 무효화)을 먼저 설명하고 확인을 받은 뒤 `reopen`.
 - 이전 UX 결정 변경: `refs --id UXD-###`로 영향 화면을 보고합니다.
+- 디자인 변경 요청은 먼저 `impact --design`으로 분류합니다(① 정보·행동, ② 토큰 의미·이름, ③ 테마 값, ④ 시각 표현, ⑤ 구현 메모). 결과의 `effective_stage`·`reapproval_stages`를 사용자에게 보여 주고, `needs_review`·`conditional` 항목은 사용자 판단을 받습니다. 목표 단계가 아직 없는 유형(`target_available: false`)은 없다고 설명하고, 지금 적용되는 단계로 처리합니다. 분류 결과만으로 `reopen`하지 않습니다(사용자 확인 필요).
+- 작업 트리의 디자인 파일 변경은 `impact --design`(기본 기준 `HEAD`)으로 파일·토큰 이름 기준 분류를 볼 수 있습니다.
 
 ## 6단계 — 완료 보고
 
@@ -104,3 +107,16 @@ disable-model-invocation: true
 
 1. `impact`로 바뀐 기획 ID와 이를 참조하는 UXD·SCR·CMP를 보고합니다. 디자인 승인이 모두 무효가 되었음을 알립니다.
 2. 기획이 재승인·커밋되어 있으면, 사용자 확인 후 `rebase --confirm` → UX Planning부터 바뀐 항목 중심으로 재검토합니다(바뀌지 않은 결정은 다시 묻지 않음).
+
+## 워크플로 v2 전환(WF-D05)
+
+- `config.workflow`가 없으면 v1이며 위 절차가 그대로입니다. v2 전환은 **사용자가 요청하고 명시적으로 승인한 경우에만** 합니다("v2 전환 승인" 같은 명시적 표현).
+- 순서: `migrate --to v2 [--theme-file <경로>]`로 계획을 보여 줌 → 기존 승인·해시·revision이 그대로라는 점, design_direction은 승인 없이 추가된다는 점, 테마 파일 효과를 설명 → 승인 → `--confirm`.
+- **Design Direction(07, v2만)**: UX 설계 승인 뒤 `begin --stage design_direction` → `templates/07-design-direction.md`로 작성 → `trace --stage design_direction` → `done` → `submit` → **"디자인 방향 승인"** → `approve`. 시각 결정(VD)은 사용자에게 하나씩 결정을 받아 '승인'·'제외'로 정합니다(후보·미결정이 남으면 제출 불가). UX 설계를 바꿔야 하는 요청(①·②)은 07에서 결정하지 않고 CR로 남겨 `reopen --stage ux_spec`을 안내합니다. 승인되지 않은 VD는 프리뷰에 쓰지 않습니다.
+- **테마(v2, `design-theme/v1`)**: 렌더링 값은 테마 파일, 토큰 이름·의미는 04입니다. 04 문서를 고쳐 값을 맞추지 않습니다. 테마를 바꾸면 `theme-check`로 확인하고, 프리뷰 `tokens.css`는 `theme-check --print-css`의 기대 CSS로 맞춥니다. 테마에 새 토큰 이름이 필요하면 ②로 UX Spec 개정을 안내합니다. 테마 경로 변경은 사용자 확인 후 `migrate --replace-theme-file`.
+- **렌더러(07의 code·figma·both)**: 엔진은 Figma를 호출하지 않습니다. Figma를 쓸 수 없으면 사용자 확인 후 06의 '사용 렌더러'를 code로 바꾸고 사유를 적어 Code-first로 진행합니다. 어느 경로든 최종 승인은 프리뷰입니다.
+- **design_direction 게이트**: 이미 v2인 프로젝트는 꺼져 있고(선택 단계), 프리뷰 진행·승인에 영향이 없습니다. 켜기는 사용자 동의 후 `migrate --to v2 --enable-gate design_direction`(계획) → `--confirm`. 켜면 다음 프리뷰 시작·제출·승인부터 Design Direction 승인이 필요하고, 이미 승인된 프리뷰는 그대로 유지된다는 점을 먼저 설명합니다.
+- v2 `check`에서 `theme_changed`(테마 값만 바뀜)가 나오면 UX Spec 승인은 유지된다고 설명하고, 확인을 받아 `reopen --stage preview` → `preview-verify` → 재승인합니다.
+- `check`의 문제에 `requires_user_decision: true`가 있으면 분류를 사용자에게 보여 주고 판단을 받습니다. 분류만으로 `reopen`하거나 승인하지 않습니다.
+- 자세한 규칙: `reference/design-state.md`의 "워크플로 v2", `reference/change-impact.md` §5.
+

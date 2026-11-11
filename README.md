@@ -30,7 +30,8 @@ skills/product-init/
 skills/product-design/
   SKILL.md                 진입점(UX Planning → UX 설계 → UI 프리뷰 → 승인)
   reference/               design-state, ux-planning, ux-spec, review-checklist, preview
-  scripts/product_design.py  결정적 보조 스크립트(Python 3.11+, 표준 라이브러리만)
+  scripts/product_design.py  결정적 보조 스크립트 진입점(CLI, Python 3.11+, 표준 라이브러리만)
+  scripts/pd_core.py · pd_theme.py · pd_impact.py  공통(상태·승인·해시·검증) · 테마·렌더러·프리뷰 계약 · 변경 영향 분류
   templates/               00-ux-decisions … 06-preview-review, preview/(Vite+React 프리뷰 앱)
 docs/architecture.md       설계
 tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
@@ -38,6 +39,12 @@ tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
 tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
 tests/design-scenarios.md  /product-design 테스트 시나리오와 실행 기록
 tests/product_design_test.py /product-design 스크립트 테스트(자체 완결형): python3 tests/product_design_test.py
+tests/product_design_impact_test.py /product-design 디자인 변경 영향 분류(impact --design) 테스트
+tests/product_design_v2_test.py /product-design 워크플로 v2 상태·전환·무효화 테스트
+tests/product_design_dd_test.py /product-design Design Direction 단계·게이트·의미 해시 테스트
+tests/product_design_theme_test.py /product-design 테마 계약·렌더러 경로 테스트(PD_FULL=1이면 프리뷰 빌드·승인 포함)
+tests/fixtures/           테스트 고정 사례(디자인 변경 분류 D1–D15)
+tests/harness/            LLM 회귀 하네스(/product-start S01–S19, /product-init K1–K10)와 자동 판정기
 ```
 
 ## 설치(제품 프로젝트에서 사용)
@@ -152,7 +159,7 @@ Planning이 승인된 제품 저장소에서 화면 단위 기획과 설계를 �
 .ai-workflow/design.json        디자인 상태(기준). state.yaml의 design: not_started는 "디자인 단계가 열림" 표시일 뿐입니다
 .ai-workflow/design-notes.md    인터뷰·피드백 원문
 .ai-workflow/backup/design/     (필요할 때만) 수정 전 백업
-docs/design/00-ux-decisions.md … 06-preview-review.md
+docs/design/00-ux-decisions.md … 06-preview-review.md (v2: 07-design-direction.md)
 design-preview/                 정적 프리뷰(제품 코드 아님, 실제 API·인증 없음)
 ```
 
