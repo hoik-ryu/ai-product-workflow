@@ -7,7 +7,7 @@ project:
   name: ""            # 짧은 제품 이름
   idea: ""            # 아이디어 원문 그대로
   language: "ko"      # 산출물 언어. 기본 ko, 사용자가 명시한 경우에만 변경 (예: en)
-  created_at: ""      # ISO 8601
+  created_at: ""      # ISO 8601 UTC — `ps_state.py now` 값
 
 current_stage: discovery   # discovery | planning | design
 
@@ -42,4 +42,5 @@ stages:
     status: locked         # locked | not_started  (Milestone 2 이후. planning 승인으로만 잠금 해제)
 
 history: []
-  # - { at: "", stage: discovery, event: started | submitted | changes_requested | approved | reopened | outdated | generated, revision: 0, note: "" }
+  # 항목은 scripts/ps_state.py(event·approve)가 추가합니다(시각은 실제 시스템 UTC). 직접 쓰지 않습니다.
+  # - { at: "", stage: discovery, event: started | submitted | changes_requested | approved | reopened | outdated | generated, revision: 0, note: "", src: engine }
