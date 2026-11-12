@@ -159,6 +159,33 @@ disable-model-invocation: true
    - 실행 중이던 배치는 다음 `task-done`·`checkpoint`에서 자동으로 멈춥니다.
    - 관련 없는 배치는 계속 진행할 수 있습니다.
 
+## 일상 개발 — 변경 유형별 경로(T0~T4)와 `ui-guard`
+
+기획·디자인·기반이 승인된 뒤의 일상 변경은 배치·계획 승인 없이 진행합니다. 기준(승인 문서·토큰 정본·대응표)은 바꾸지 않고 지킵니다. 유형이 애매하면 사용자에게 묻습니다.
+
+| 유형 | 예 | 경로 | 사용자 승인 |
+|---|---|---|---|
+| T0 스타일·문구 수정 | 간격·정렬·문구, 승인 토큰 안의 값 선택 | 구현 → `ui-guard` | 없음 |
+| T1 버그 수정 | 승인 명세와 다르게 동작 | 회귀 테스트 → 수정 → 테스트 → `ui-guard` | 없음(기존 테스트 변경은 확인) |
+| T2 승인된 명세 안의 기능 추가 | 승인된 AC·화면·상태 범위 안의 구현 | 구현 → AC 테스트 → `ui-guard` | 없음 |
+| T3 AC·정책 변경 | 규칙·AC·화면·상태 추가·변경 | 코드로 바꾸지 않고 멈춤 → `/product-start`·`/product-design` 재진입(영향 분석·재승인) | 필요 |
+| T4 디자인 시스템 변경 | 토큰 의미·테마 값·공통 부품 추가·API 변경 | 멈춤 → `/product-design impact --design` → 재승인 | 필요 |
+
+- 구현 전: `ui-map show`로 재사용할 부품을 확인하고, 필요하면 해당 배치의 `ui-brief`를 참고용으로 봅니다. 새 부품을 만들기 전에 기존 CMP 재사용을 먼저 검토합니다.
+- 구현 후: `ui-guard`가 `"ok": true`여야 완료로 말합니다. `route_hint`가 T3·T4이거나 `design_not_current`면 코드로 우회하지 않고 보고하고 멈춥니다.
+- `ui-guard`는 읽기 전용입니다(상태·승인 문서·대응표·Git index를 쓰지 않고, 커밋을 요구하지 않음). 브라우저 레이아웃은 검사하지 않습니다(`verify`·프로젝트 브라우저 명령).
+- 새 부품 등록(`ui-map register`)과 토큰 예외(`ui-map except`)는 사용자 확인 문장이 필요한 기존 명령으로만 합니다.
+- 최초 구축·대규모 변경·T3·T4 반영 구현은 기존 관리형 배치 흐름(1~9단계)을 씁니다.
+
+```
+python3 $SKILL/scripts/product_build.py ui-guard --project "$PWD"                 # 변경 파일(기본, base=HEAD)
+python3 $SKILL/scripts/product_build.py ui-guard --project "$PWD" --base main     # 브랜치 전체 변경
+python3 $SKILL/scripts/product_build.py ui-guard --project "$PWD" --path <파일>   # 지정 파일
+python3 $SKILL/scripts/product_build.py ui-guard --project "$PWD" --all           # 소스 전체 감사(기준선 측정)
+```
+
+규칙·출력·실패 코드: `reference/ui.md` §9.
+
 ## 상태 보고 — `status --all`
 
 기획(state.yaml), 디자인(design.json), 보일러플레이트(boilerplate.json), 구현 계획(build.json)을 한 번에 요약합니다. `state.yaml`의 `design: not_started`는 '디자인 단계가 열림' 표시라는 `notes`를 함께 전합니다.

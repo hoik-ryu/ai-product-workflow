@@ -197,3 +197,39 @@ ui-feedback resolve --batch Bxx --id FB-001 --note "<확인 문장>"  |  --withd
 ## 8. 아직 하지 않는 것(M3.6 이후)
 
 실전 PoC 실행(M3.6), Figma 입력·시각 비교(M3.7).
+
+## 9. 일상 개발 경량 검사(`ui-guard`)
+
+T0~T2 변경(SKILL.md "일상 개발")에서 배치·구현 계획·커밋 없이 실행하는 **읽기 전용** 검사입니다. 상태 파일·승인 문서·대응표를 쓰지 않고, `GIT_OPTIONAL_LOCKS=0`으로 Git index도 갱신하지 않습니다.
+
+**사전 조건**(없으면 exit 2): Git 저장소 루트·커밋 1개 이상(기존 preflight), 기획 승인(`require_planning`), 대응표(`no_ui_map`), 토큰 출력 설정(`tokens_not_configured`). 프로필이 없거나 `[ui]`가 없으면 기본값으로 검사하고 경고합니다.
+
+**모드**(하나만): 기본 = base(기본 `HEAD`, `--base <ref>`) 이후 변경 파일 / `--path <파일>`(반복) = 지정 파일 / `--all` = 소스 전체 감사. `--strict`는 경고도 실패로 처리합니다.
+
+**변경 감지**(기본 모드): `git diff --name-status --no-renames <base>`(staged·unstaged·삭제), `diff --cached`·`diff`(상태 구분), `ls-files --others --exclude-standard`(untracked). 모두 `-z`라서 한글·공백 경로가 그대로입니다. rename은 삭제 + 추가로 보입니다. 상태: `staged`, `unstaged`, `both`(stage 뒤 재수정 → 작업 트리 기준 검사, 경고), `untracked`, `deleted`, `committed`(base..HEAD 커밋). `.gitignore`에 걸린 파일·심볼릭 링크·1MB 초과 파일은 검사하지 않습니다(뒤 둘은 경고). Git 조회가 실패하면 빈 목록으로 통과시키지 않고 `git_failed`·`bad_base`.
+
+**스냅샷**: 대상 파일과 판정 입력(대응표·토큰 CSS·테마·design.json·state.yaml·04·프로필)을 읽어 판정한 뒤, HEAD·변경 목록·내용 해시를 다시 읽어 같을 때만 결과를 냅니다. 다르면 최대 3회 다시 하고, 그래도 다르면 `snapshot_unstable`(바뀐 경로)입니다.
+
+**검사 규칙**
+
+| 구분 | 규칙 | 심각도 |
+|---|---|---|
+| 전역 | 디자인 수준 L2 이상(`design_info`). L0·L1이면 `design_not_current`(검사 결과는 참고로 함께 출력) | 오류 |
+| 전역 | 토큰 CSS ↔ 승인 정본(`token_check`: v2 테마 적용값, 없으면 04 표) 불일치·누락 `token_mismatch`. 등록된 예외는 `excepted` | 항상 오류 |
+| 전역 | 대응표 무결성(`map_problems`: path·export 실존, 04에 없는 CMP, 프리뷰·보호 경로) | 오류 |
+| 변경 | 테마(정본) 파일 변경 `theme_changed`(T4). `/product-design` v2는 테마 값 변경을 프리뷰 재검증으로만 다루므로(UX Spec·Design Direction 승인 유지) ui-guard가 직접 막습니다 | 오류 |
+| 변경 | 보호 경로(`docs/planning/`·`docs/design/`·`design-preview/`) 변경 `protected_path_changed`. 승인 기록의 해시와 같으면 `approved_change`(정보). 프리뷰 단계가 승인 전이면 프리뷰 변경은 `preview_changed` 경고 | 오류 |
+| 변경 | 워크플로 상태 파일(state.yaml·design.json 등) 변경 `workflow_state_uncommitted`(소유 Skill이 쓴 것인지 확인) | 경고 |
+| 대상 | 직접 값(`audit_text`, 프로필 `[ui.audit]` kinds·mode) `raw_value` | mode=warn → 경고, block → 오류 |
+| 대상 | 대응표에 없는 부품(component_roots 안 새 파일·새 export) `unregistered_component` | 경고(`--strict` 실패) |
+| 대상 | 이미 대응된 CMP 표지를 다른 파일에 구현 `duplicate_component` | 오류 |
+| 대상 | 대응된 부품과 같은 이름 `possible_duplicate`, 04에 없는 CMP 표지 `unknown_cmp_marker`(T4) | 경고 |
+| 정보 | 대상 파일이 쓰는 대응 부품(`components.reuse`) | — |
+
+**레거시 분리**(기본 모드): 직접 값은 base 대비 새로 생기거나 바뀐 줄의 것만, 표지·중복·미등록 부품은 base에 없던 것만 이번 변경의 위반입니다. base에 이미 있던 위반은 `legacy`로 따로 보고하고 실패시키지 않습니다. 전역 검사는 레거시 구분 없이 항상 적용합니다. `--path`·`--all`은 레거시 구분 없이 모두 현재 위반으로 봅니다.
+
+**출력**(`pb-ui-guard/v1`): `ok`, `error`, `mode`, `base{ref,sha,head}`, `snapshot{digest,attempts}`, `design`, `files[{path,state,status,kind}]`, `checks{protected,tokens,audit,map,components}`, `errors`, `warnings`, `info`, `legacy`, `route_hint[{code,type(T0~T4),next}]`, `counts`, `browser{status: not_run}`, `read_only`.
+
+**종료 코드**: 0 통과(경고 가능) / 2 위반(`guard_failed`), 디자인 무효(`design_not_current`), 사전 조건·Git·스냅샷 차단 / 1 내부 오류.
+
+**역할 분리**: ui-guard는 정적 검사(토큰·직접 값·대응표·보호 경로·표지)만 합니다. 모바일·PC 레이아웃(overflow·잘림·터치 영역·콘솔·접근성)은 `verify` 또는 프로젝트 브라우저 명령의 `pb-ui-report/v1` 판정 몫입니다.

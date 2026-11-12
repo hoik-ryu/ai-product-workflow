@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,7 @@ import pb_ledger as L  # noqa: E402
 import pb_ui as U  # noqa: E402
 import pb_uiev as UV  # noqa: E402
 import pb_uireview as UR  # noqa: E402
+import pb_uiguard as UG  # noqa: E402
 from pb_exec import (  # noqa: E402
     DEP_LEVELS, EVIDENCE_REL, LOCK_REL, acquire_lock, changed_vs, classify, diff_states, ensure_gitignore, head_sha, heartbeat,
     in_patterns, load_checkpoint, lock_age_minutes, next_task, read_lock, release_lock, require_lock, save_base_tests, states_now, task_order,
@@ -2276,6 +2278,32 @@ def cmd_ui_feedback(a) -> None:
     block("invalid_arguments", f"알 수 없는 동작: {a.action}")
 
 
+def cmd_ui_guard(a) -> None:
+    """일상 개발(T0~T2)의 읽기 전용 UI 경량 검사. 배치·계획·커밋 없이 실행하고 아무것도 쓰지 않습니다(reference/ui.md §9)."""
+    os.environ["GIT_OPTIONAL_LOCKS"] = "0"  # git status·diff가 index를 갱신하지 않도록(하위 프로세스에도 적용)
+    if sum(bool(x) for x in (a.path, a.all, a.base)) > 1:
+        block("invalid_arguments", "--base, --path, --all은 함께 쓰지 않습니다(변경 파일 / 지정 파일 / 전체 감사 중 하나).")
+    project = project_of(a)
+    gate = require_planning(project)
+    prof, uprof, _plan = _ui_ctx(project)
+    umap = U.load_map(project)
+    if umap is None:
+        block("no_ui_map", f"{U.UI_MAP_REL}이 없습니다. ui-map candidates·register(사용자 확인)와 ui-map tokens --file로 기준을 먼저 등록하세요.")
+    if not umap.get("tokens"):
+        block("tokens_not_configured", "대응표에 토큰 출력이 설정되지 않았습니다. ui-map tokens --file <CSS 파일> --note로 설정하세요.")
+    mode = "path" if a.path else "all" if a.all else "changed"
+    out, code = UG.run_guard(project, mode, a.base or "HEAD", a.path, a.strict, prof, uprof, umap, gate)
+    if not (project / PROFILE_REL).exists():
+        out["warnings"].append(f"[profile_default] {PROFILE_REL}이 없어 기본 프로필로 검사했습니다(경로·확장자 기본값)")
+    elif "ui" not in prof:
+        out["warnings"].append("[ui_profile_default] 프로필에 [ui]가 없어 UI 기본값(audit warn·color, component_roots = paths.components)으로 검사했습니다")
+    out["counts"]["warnings"] = len(out["warnings"])
+    if out["ok"] and a.strict and out["warnings"]:
+        out.update(ok=False, error="guard_failed")
+        code = 2
+    emit(out, code)
+
+
 # ---------------------------------------------------------------- 진입점
 class JsonArgParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -2358,6 +2386,8 @@ def main() -> None:
     s.add_argument("--summary", default=""); s.add_argument("--fact", action="append"); s.add_argument("--screen", action="append")
     s.add_argument("--state", action="append"); s.add_argument("--note", default=""); s.add_argument("--by", default=""); s.add_argument("--review")
     s.add_argument("--id"); s.add_argument("--route"); s.add_argument("--withdraw", action="store_true"); s.add_argument("--reason", default="")
+    s = add("ui-guard", cmd_ui_guard); s.add_argument("--base"); s.add_argument("--path", action="append"); s.add_argument("--all", action="store_true")
+    s.add_argument("--strict", action="store_true")
     a = ap.parse_args()
     try:
         a.fn(a)

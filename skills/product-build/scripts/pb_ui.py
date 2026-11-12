@@ -267,24 +267,39 @@ def map_problems(project: Path, umap: dict, plan: dict | None, st: dict | None, 
         if not b:
             block("unknown_batch", f"계획에 {batch} 배치가 없습니다.")
         allow = (b.get("paths") or {}).get("allow") or []
-        mapped_paths = {m.get("path"): c for c, m in comps.items() if m.get("path")}
-        exports = {m.get("export"): c for c, m in comps.items() if m.get("export")}
-        for rel in walk(project, None, ["node_modules", "dist", ".git", PREVIEW_DIR], exts or TEXT_EXT):
-            if not in_patterns(rel, allow) or is_test_path(rel) or rel in mapped_paths:
-                continue
+        files = [rel for rel in walk(project, None, ["node_modules", "dist", ".git", PREVIEW_DIR], exts or TEXT_EXT)
+                 if in_patterns(rel, allow) and not is_test_path(rel)]
+        dup, de, dw = duplicate_findings(project, files, comps)
+        E += de
+        W += dw
+    return {"ok": not E, "errors": E, "warnings": W, "duplicates": dup,
+            "counts": {"mapped": len(comps), "cmp_04": len(cmps04), "unmapped": sorted(c for c in cmps04 if c not in comps)}}
+
+
+def duplicate_findings(project: Path, files: list[str], comps: dict, texts: dict[str, str] | None = None) -> tuple[list[dict], list[str], list[str]]:
+    """대응되지 않은 파일이 이미 대응된 CMP의 표지를 갖거나(중복 구현), 대응된 부품과 이름이 같은지(중복 의심).
+    texts가 있으면 그 내용(ui-guard의 스냅샷)을 쓰고, 없으면 파일을 읽습니다."""
+    mapped_paths = {m.get("path"): c for c, m in comps.items() if m.get("path")}
+    exports = {m.get("export"): c for c, m in comps.items() if m.get("export")}
+    dup, E, W = [], [], []
+    for rel in files:
+        if rel in mapped_paths:
+            continue
+        if texts is not None and rel in texts:
+            txt = (texts[rel] or "")[:4000]
+        else:
             try:
                 txt = (project / rel).read_text(encoding="utf-8", errors="replace")[:4000]
             except OSError:
                 continue
-            for c in sorted(set(re.findall(r"CMP-\d{3}", txt))):
-                if c in comps and comps[c].get("path") != rel:
-                    dup.append({"file": rel, "cmp": c, "mapped": comps[c].get("path") or comps[c].get("package")})
-                    E.append(f"[duplicate_component] {rel}가 {c} 표지를 갖고 있지만 {c}는 이미 {comps[c].get('path') or comps[c].get('package')}에 대응됩니다")
-            stem = Path(rel).stem
-            if stem in exports and comps[exports[stem]].get("path") != rel:
-                W.append(f"[possible_duplicate] {rel}의 이름이 대응된 부품 {exports[stem]}({comps[exports[stem]].get('path')})과 같습니다")
-    return {"ok": not E, "errors": E, "warnings": W, "duplicates": dup,
-            "counts": {"mapped": len(comps), "cmp_04": len(cmps04), "unmapped": sorted(c for c in cmps04 if c not in comps)}}
+        for c in sorted(set(re.findall(r"CMP-\d{3}", txt))):
+            if c in comps and comps[c].get("path") != rel:
+                dup.append({"file": rel, "cmp": c, "mapped": comps[c].get("path") or comps[c].get("package")})
+                E.append(f"[duplicate_component] {rel}가 {c} 표지를 갖고 있지만 {c}는 이미 {comps[c].get('path') or comps[c].get('package')}에 대응됩니다")
+        stem = Path(rel).stem
+        if stem in exports and comps[exports[stem]].get("path") != rel:
+            W.append(f"[possible_duplicate] {rel}의 이름이 대응된 부품 {exports[stem]}({comps[exports[stem]].get('path')})과 같습니다")
+    return dup, E, W
 
 
 def candidates(project: Path, prof: dict, uprof: dict, umap: dict | None) -> dict:
@@ -413,28 +428,37 @@ def audit_files(project: Path, prof: dict, uprof: dict, plan: dict | None, batch
     return [f for f in files if f.endswith(exts) and not is_test_path(f) and f != tok_file and not is_preview(f) and not is_protected(f)]
 
 
+def audit_text(rel: str, text: str, kinds: list[str], exc: list[dict]) -> tuple[list[dict], list[dict]]:
+    """한 파일 내용의 직접 값(color·length) 판정. 주석 줄은 건너뜁니다. (findings, excepted)"""
+    findings, excepted = [], []
+    for n, line in enumerate(text.splitlines(), 1):
+        s = line.strip()
+        if s.startswith(("//", "/*", "*", "<!--")):
+            continue
+        hits = []
+        if "color" in kinds:
+            hits += [("color", m.group(1)) for m in COLOR_RE.finditer(line)]
+        if "length" in kinds:
+            hits += [("length", m.group(1)) for m in LENGTH_RE.finditer(line)]
+        for kind, val in hits:
+            rec = {"file": rel, "line": n, "kind": kind, "value": val}
+            hit = next((e for e in exc if fnmatch.fnmatch(rel, e["path"]) and (not e.get("value") or norm(e["value"]) == norm(val))), None)
+            (excepted if hit else findings).append({**rec, **({"reason": hit["reason"]} if hit else {})})
+    return findings, excepted
+
+
 def token_audit(project: Path, prof: dict, uprof: dict, plan: dict | None, batch: str | None, umap: dict) -> dict:
     kinds = uprof["audit"]["kinds"]
     exc = umap["exceptions"]["audit"]
     findings, excepted = [], []
     for rel in audit_files(project, prof, uprof, plan, batch, umap):
         try:
-            lines = (project / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+            text = (project / rel).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for n, line in enumerate(lines, 1):
-            s = line.strip()
-            if s.startswith(("//", "/*", "*", "<!--")):
-                continue
-            hits = []
-            if "color" in kinds:
-                hits += [("color", m.group(1)) for m in COLOR_RE.finditer(line)]
-            if "length" in kinds:
-                hits += [("length", m.group(1)) for m in LENGTH_RE.finditer(line)]
-            for kind, val in hits:
-                rec = {"file": rel, "line": n, "kind": kind, "value": val}
-                hit = next((e for e in exc if fnmatch.fnmatch(rel, e["path"]) and (not e.get("value") or norm(e["value"]) == norm(val))), None)
-                (excepted if hit else findings).append({**rec, **({"reason": hit["reason"]} if hit else {})})
+        f, x = audit_text(rel, text, kinds, exc)
+        findings += f
+        excepted += x
     mode = uprof["audit"]["mode"]
     return {"ok": mode == "warn" or not findings, "mode": mode, "kinds": kinds, "findings": findings, "excepted": excepted,
             "counts": {"findings": len(findings), "excepted": len(excepted)},
