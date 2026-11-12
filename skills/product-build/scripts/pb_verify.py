@@ -30,7 +30,7 @@ CASE_STATUSES = ("passed", "failed", "error", "skipped")
 MAX_REPORT_BYTES = 20_000_000
 HISTORY_KEEP = 12
 TAG_BRACKET = re.compile(r"\[\s*(AC-\d{3}(?:\s*[,/]\s*AC-\d{3})*)\s*\]")
-# prefix: 테스트 이름(마지막 '>' 구간)의 콜론 앞 머리가 ID 목록으로만 이루어질 때. 예) "SCR-223-ST6 / AC-080:", "AC-042·071·073:"
+# prefix: 테스트 이름(마지막 '>' 구간)의 콜론 앞 머리가 ID 목록으로만 이루어질 때. 예) "SCR-001-ST2 / AC-001:", "AC-001·002·003:"
 PREFIX_HEAD = re.compile(r"[A-Z]{2,4}-\d{3}(?:[A-Z0-9\-·→/,\s])*")
 AC_ANY = re.compile(r"\bAC-\d{3}\b")
 AC_SNAKE = re.compile(r"\bac_(\d{3})\b", re.I)

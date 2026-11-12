@@ -35,7 +35,7 @@ LLM이 사용자 요청을 사실로 정리해 **프로젝트 밖** 임시 파�
 {
   "schema": "design-change-request/v1",
   "items": [
-    {"id": "R1", "summary": "게스트 추가 버튼을 헤더로", "facts": [
+    {"id": "R1", "summary": "예약 추가 버튼을 헤더로", "facts": [
       {"kind": "placement", "component": "CMP-010", "screen": "SCR-211", "from": "오른쪽 아래", "to": "헤더", "spec_rule": "fixed", "refs": ["UXD-026"]}
     ]}
   ]

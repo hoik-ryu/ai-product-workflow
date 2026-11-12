@@ -59,7 +59,7 @@ ignored_paths = []
 POSTGRES_PORT = 55432
 [verify.stages]
 fe = [ { run = "test -f app.txt", cwd = "frontend" }, { run = "echo failing-check && false", cwd = "frontend" } ]
-be = [ { run = "sh run.sh", cwd = "backend" } ]
+be = [ { run = "sleep 1 && sh run.sh", cwd = "backend" } ]
 db = [ { run = "{compose} up -d --wait db" } ]
 """
 
@@ -263,6 +263,28 @@ def main():
           and "false" in s["verification"]["fe"]["failed_step"] and s["verification"]["fe"]["tail"], s["verification"].get("fe"))
     code, out = pi("verify", "--project", str(d), "--stage", "be")
     check("I12a 검증 통과 기록(be)", code == 0 and state(d)["verification"]["be"]["result"] == "pass", out)
+    # ---- 동시 실행: 상태 잠금(다른 단계 검증이 앞선 기록을 덮어쓰지 않음)
+    holder = subprocess.Popen([sys.executable, "-I", "-c",
+                               "import fcntl,os,sys,time;fd=os.open(sys.argv[1],os.O_RDONLY);fcntl.flock(fd,fcntl.LOCK_EX);print('locked',flush=True);time.sleep(30)",
+                               str(d / ".ai-workflow")], stdout=subprocess.PIPE, text=True)
+    holder.stdout.readline()
+    before = (d / ".ai-workflow/boilerplate.json").read_bytes()
+    code, out = pi("verify", "--project", str(d), "--stage", "be")
+    check("I12g 다른 명령 실행 중이면 state_busy로 거부, 상태 불변", code == 2 and out.get("error") == "state_busy"
+          and (d / ".ai-workflow/boilerplate.json").read_bytes() == before, out)
+    code, out = pi("verify", "--project", str(d), "--stage", "be", "--dry-run")
+    code2, out2 = pi("status", "--project", str(d))
+    check("I12h 잠금 중에도 dry-run·status(읽기)는 가능", code == 0 and out.get("dry_run") and "verification" in out2, out)
+    holder.kill(); holder.wait()
+    at_before = {k: v["at"] for k, v in state(d)["verification"].items() if isinstance(v, dict)}
+    procs = {stg: subprocess.Popen([sys.executable, "-I", SCRIPT, "verify", "--project", str(d), "--stage", stg],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for stg in ("fe", "be")}
+    outs = {stg: json.loads(pr.communicate()[0]) for stg, pr in procs.items()}
+    ver = state(d)["verification"]
+    ran = [stg for stg, o in outs.items() if o.get("error") != "state_busy"]
+    lost = [stg for stg in ran if ver[stg]["at"] == at_before.get(stg) and ver[stg]["at"] != outs[stg]["verification"]["at"]]
+    check("I12i fe·be 동시 실행 시 실행된 단계 기록이 모두 남음(덮어쓰기 없음)", ran and not lost
+          and all(ver[stg]["at"] == outs[stg]["verification"]["at"] for stg in ran), {"ran": ran, "outs": {k: o.get("error") or o["verification"]["result"] for k, o in outs.items()}})
     code, out = pi("verify", "--project", str(d), "--stage", "db", "--dry-run")
     steps = " ".join(x["run"] for x in out.get("steps", []))
     check("I12b Docker 명령 프로젝트명 격리", "docker compose -p badminton-playbook-init-verify --env-file .env.example up -d --wait db" in steps, steps)

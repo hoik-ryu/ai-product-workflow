@@ -111,7 +111,9 @@ disable-model-invocation: true
 1. 단계(fe, be, db, smoke)별로 `verify --stage <s> --dry-run`을 실행해 실행할 명령을 보여 줍니다.
    - Docker 단계는 Compose 프로젝트명(`<slug>-init-verify`), 검증 포트, 정리 방식(`down --remove-orphans`, 볼륨 유지)도 함께 보여 줍니다.
    - 실행 확인을 받습니다.
-2. 확인된 단계만 `verify --stage <s>`로 실행합니다.
+2. 확인된 단계만 `verify --stage <s>`로 **한 번에 하나씩 순서대로** 실행합니다(병렬·백그라운드 실행 금지).
+   - `state_busy`가 나오면 다른 명령이 실행 중이라는 뜻입니다. 끝날 때까지 기다린 뒤 다시 실행합니다.
+   - 보고는 명령 출력이 아니라 실행 후 `status`의 `verification` 기록을 기준으로 합니다.
    - 실패하면 `verification.<s>`의 실패 명령과 출력 마지막 줄을 요약합니다.
    - Docker가 꺼져 있으면(`docker_unavailable`) 이를 보고합니다.
    - 사용자가 요청하지 않으면 코드를 고치지 않습니다.

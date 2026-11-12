@@ -80,3 +80,20 @@
 수정 내역:
 - 테스트: I12e(기록 없는 프로젝트의 볼륨 삭제 불허)를 db 실행 **전**에 검사하도록 순서를 바꿨습니다. 1차는 Docker가 꺼져 있어 우연히 통과했습니다.
 - 예시 manifest: 릴리스된 v1.0.0 manifest와 내용이 같도록 `.gitignore` 필수 줄과 `ignored_paths`에 `.pytest_cache`, `.ruff_cache`, `.mypy_cache`를 추가했습니다(주석 제외 TOML 동일성 확인).
+
+### 3차 실행(2026-11-12, M2 최종 검증)
+
+환경: Docker **미가동**. 격리 Compose 프로젝트(`<slug>-init-verify`)와 검증 포트 55432·58000·55173이 비어 있음을 확인한 뒤 실행했습니다. 기존 dev DB와 컨테이너는 건드리지 않았습니다. 로그: `~/Desktop/ai-product-workflow-test-logs/k1/`.
+
+| 구분 | 결과 |
+|---|---|
+| Skill 테스트 K1–K10 | 최초 판정 7/10 → 판정기 수정 후 같은 로그 재판정 **9/10**. K7만 미통과(db `docker_unavailable`, Docker 필요) |
+| 엔진 결함 | 모델이 fe·be 검증을 **동시에** 실행해 be 저장이 fe 기록을 덮어씀(fe 실제 로그 5단계 exit 0, 기록에는 be·db만). → 상태 변경 명령에 프로젝트 단위 잠금 추가 |
+| 스크립트 테스트 | **51/51 Pass**(I12g–I12i 추가). 잠금을 뺀 변이 실행에서 I12g·I12i가 실패해 테스트가 결함을 잡는 것을 확인 |
+
+수정 내역:
+- 엔진: `product_init.py`의 상태 변경 명령(plan·approve·branch·apply·merge·verify·cleanup, dry-run 제외)이 `.ai-workflow` 디렉터리에 배타 잠금을 겁니다. 다른 명령이 실행 중이면 `state_busy`로 거부합니다. 새 파일은 만들지 않습니다.
+- Skill: 7단계 검증을 한 번에 하나씩 실행하고, 결과는 `status`의 기록을 기준으로 보고하도록 명시했습니다.
+- 판정기(`tests/harness/product_init/summarize.py`): 블록 경계를 `### k<번호>` 줄로 제한했습니다(모델 응답 속 `### ` 제목 때문에 K3 오판정). K8은 "k7b 직후와 상태 동일"로 판정합니다(K7 결과가 K8로 번지지 않도록).
+- 테스트 픽스처: be 단계에 `sleep 1`을 넣어 동시 실행 경합을 재현 가능하게 했습니다.
+- 남은 일: Docker 가동 후 K7·K8 재실행.

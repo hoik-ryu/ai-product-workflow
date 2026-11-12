@@ -30,7 +30,7 @@ requires = []                                           # 필요한 환경. 없�
 |---|---|---|
 | 이름 속 대괄호 태그 | `[AC-001] 빈 좌석 표시`, `[AC-006, AC-007]` | 기본(`tag_style = "bracket"`) |
 | 리포트의 명시 필드 | pb-json `acs`, JUnit `<property name="ac" value="AC-001"/>` | 항상 |
-| 이름 머리 ID 목록 | `SCR-212 / AC-010 / AC-016: …`, `AC-042·071: …`(→ AC-042, AC-071) | `tag_style = "prefix"` |
+| 이름 머리 ID 목록 | `SCR-001 / AC-001 / AC-002: …`, `AC-001·003: …`(→ AC-001, AC-003) | `tag_style = "prefix"` |
 | 테스트 함수 이름 | `test_ac_010_add_member…`, `test_ac_012_013_guest…` | `tag_style = "pytest_name"` (여러 형식은 목록: `["prefix", "pytest_name"]`) |
 
 - `prefix` 형식은 테스트 이름(마지막 `>` 구간)의 콜론 앞이 **ID 목록으로만** 이루어질 때만 인정합니다. `shows AC-001 in text: …`처럼 문장 속 언급은 인정하지 않습니다.

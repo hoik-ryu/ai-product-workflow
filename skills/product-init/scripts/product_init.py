@@ -138,6 +138,31 @@ def save_state(project: Path, st: dict) -> None:
     os.replace(tmp, p)
 
 
+MUTATING = {"plan", "approve", "branch", "apply", "merge", "verify", "cleanup"}
+
+
+def acquire_state_lock(project: Path) -> int | None:
+    """상태를 바꾸는 명령은 프로젝트당 하나만 실행합니다(동시 실행 시 나중 저장이 앞선 기록을 덮어쓰는 문제 방지).
+
+    `.ai-workflow` 디렉터리 자체에 배타 잠금을 걸어 새 파일을 만들지 않습니다. 잠금은 프로세스가 끝나면 풀립니다.
+    """
+    try:
+        import fcntl
+    except ImportError:  # fcntl이 없는 플랫폼에서는 잠금 없이 진행
+        return None
+    d = project / ".ai-workflow"
+    if not d.is_dir():
+        return None
+    fd = os.open(d, os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        block("state_busy", "같은 프로젝트에서 다른 /product-init 명령(예: 다른 단계 검증)이 실행 중입니다. "
+              "검증 단계는 동시에 실행하지 말고 하나씩 순서대로 실행하세요.")
+    return fd
+
+
 def add_history(st: dict, event: str, note: str = "") -> None:
     st.setdefault("history", []).append({"at": now(), "event": event, "note": note})
 
@@ -835,6 +860,8 @@ def main() -> None:
     s.add_argument("--confirm", action="store_true"); s.add_argument("--dry-run", action="store_true"); s.set_defaults(fn=cmd_cleanup)
     s = sub.add_parser("status"); s.add_argument("--project", required=True); s.add_argument("--check-remote", action="store_true"); s.set_defaults(fn=cmd_status)
     a = p.parse_args()
+    if a.cmd in MUTATING and getattr(a, "project", None) and not getattr(a, "dry_run", False):
+        acquire_state_lock(Path(a.project).resolve())
     try:
         a.fn(a)
     except RuntimeError as e:

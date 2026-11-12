@@ -134,7 +134,7 @@ def load_model(project: Path) -> dict:
 
 
 def parse_routes(text: str) -> list[str]:
-    """'/ops/roster, /ops/session (시트)' → ['/ops/roster', '/ops/session']. 와일드카드·설명은 버립니다."""
+    """'/admin/users, /admin/orders (시트)' → ['/admin/users', '/admin/orders']. 와일드카드·설명은 버립니다."""
     out = []
     for part in re.split(r"[,、]", re.sub(r"\([^)]*\)", "", text or "")):
         p = part.strip().strip("`").split()[0] if part.strip() else ""

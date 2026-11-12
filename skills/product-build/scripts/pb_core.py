@@ -64,8 +64,8 @@ RISK_TAGS = ("security", "permission", "data_loss", "schema_migration", "externa
 LAYERS = ("fe", "be", "db", "api", "test", "infra", "docs")
 VERIFY_STAGES = ("lint", "typecheck", "test", "build", "db", "e2e", "browser", "other")
 DEFAULT_RISK_KEYWORDS = {
-    "permission": ["권한", "역할", "관리자", "운영진 지정", "permission", "role", "admin"],
-    # '세션'·'토큰'은 도메인마다 뜻이 달라(운동 세션, 디자인 토큰) 기본값에서 뺍니다. 필요하면 프로필에서 추가합니다.
+    "permission": ["권한", "역할", "관리자", "permission", "role", "admin"],  # 도메인 고유 용어(예: 특정 직책 지정)는 프로필 risk_keywords로 추가
+    # '세션'·'토큰'은 도메인마다 뜻이 달라(예: 수업 세션, 디자인 토큰) 기본값에서 뺍니다. 필요하면 프로필에서 추가합니다.
     "security": ["인증", "로그인", "로그아웃", "비밀번호", "보안", "auth", "login", "logout", "password", "security"],
     "data_loss": ["삭제", "탈퇴", "초기화", "되돌릴 수 없", "delete", "remove", "purge"],  # '폐기'는 문서 개정 표시와 겹쳐 제외
     "privacy": ["개인정보", "연락처", "전화번호", "privacy", "personal data"],

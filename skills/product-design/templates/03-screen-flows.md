@@ -15,7 +15,7 @@ based_on:
 
 ```mermaid
 flowchart TD
-  SCR-001[SCR-001 로그인] -->|카카오 인증 완료| SCR-002[SCR-002 가입 정보 입력]
+  SCR-001[SCR-001 로그인] -->|소셜 인증 완료| SCR-002[SCR-002 가입 정보 입력]
 ```
 
 ### FLOW 단계 → 화면 대응
