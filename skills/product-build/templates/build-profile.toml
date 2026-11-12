@@ -72,6 +72,14 @@ step_timeout_seconds = 900
 # 선택 기능(Playwright를 프로젝트 개발 의존성으로 설치할 때만). 기본 꺼짐.
 enabled = false
 viewports = []   # 예: [{ name = "m390", width = 390, height = 844 }, { name = "pc1440", width = 1440, height = 900 }]
+# 브라우저 검증 단계(M3.4, 선택): 프로젝트 명령이 $PB_REPORT_DIR에 pb-ui-report/v1을 씁니다. 엔진은 도구를 설치·호출하지 않습니다.
+# 예시 어댑터: skills/product-build/templates/ui-adapters/react-vite-playwright/ (검토·테스트 후 사용)
+# [[verify.steps]]
+# name = "browser"
+# stage = "browser"
+# run = "node tools/pb-ui/pb-ui-playwright.mjs tools/pb-ui/ui-scenarios.json"
+# requires = ["browser"]     # verify --available browser일 때만 실행, 없으면 not_run
+# report = { format = "pb-ui", file = "ui.json" }
 
 # [ui]  (M3 Design-to-Code, 선택) — 엔진은 프레임워크·UI 라이브러리를 해석하지 않습니다. 값은 프로젝트 기록·검사 범위입니다.
 # framework = "<자유 텍스트, 기록용>"

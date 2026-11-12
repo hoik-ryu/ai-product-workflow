@@ -152,7 +152,7 @@ def uisys_cmps(project: Path) -> dict[str, dict]:
 
 # ---------------------------------------------------------------- 대응표(M3.1)
 def empty_map() -> dict:
-    return {"format": UI_MAP_FORMAT, "components": {}, "tokens": None, "exceptions": {"tokens": [], "audit": []}, "history": []}
+    return {"format": UI_MAP_FORMAT, "components": {}, "tokens": None, "exceptions": {"tokens": [], "audit": [], "log": []}, "history": []}
 
 
 def load_map(project: Path) -> dict | None:
@@ -166,7 +166,7 @@ def load_map(project: Path) -> dict | None:
     if not isinstance(d, dict) or d.get("format") != UI_MAP_FORMAT:
         block("ui_map_invalid", f"{UI_MAP_REL}의 format이 {UI_MAP_FORMAT}가 아닙니다. 자동으로 고치지 않습니다.")
     d.setdefault("components", {}); d.setdefault("tokens", None); d.setdefault("history", [])
-    ex = d.setdefault("exceptions", {}); ex.setdefault("tokens", []); ex.setdefault("audit", [])
+    ex = d.setdefault("exceptions", {}); ex.setdefault("tokens", []); ex.setdefault("audit", []); ex.setdefault("log", [])
     return d
 
 

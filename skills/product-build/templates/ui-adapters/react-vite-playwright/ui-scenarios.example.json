@@ -1,0 +1,15 @@
+{
+  "base_url": "http://127.0.0.1:4173",
+  "server": { "command": "npx vite preview --port 4173 --strictPort", "url": "http://127.0.0.1:4173", "timeout_ms": 30000 },
+  "viewports": { "mobile": { "width": 390, "height": 844 }, "desktop": { "width": 1280, "height": 800 } },
+  "scenarios": [
+    {
+      "screen": "SCR-001", "state": "SCR-001-ST1", "path": "/seats", "wait_for": "[data-testid=seat-map]",
+      "acs": ["AC-001"],
+      "interactions": [
+        { "name": "좌석 선택", "steps": [{ "click": "[data-seat=A1]" }], "expect": { "url_contains": "/reserve" }, "acs": ["AC-003"] }
+      ]
+    },
+    { "screen": "SCR-001", "state": "SCR-001-ST3", "path": "/seats?mock=error", "wait_for": "[role=alert]", "viewports": ["mobile"] }
+  ]
+}

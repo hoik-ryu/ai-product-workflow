@@ -53,7 +53,8 @@
 - 기준: v2 테마 계약이 있으면 테마 적용값(+테마에 없는 04 값), 없으면 04 토큰 표. 계산은 `/product-design`의 읽기 전용 함수를 씁니다.
 - `css-vars`: 변수 이름 = 별칭 또는 `var_pattern`(기본 `--{dashed}`: `color.primary` → `--color-primary`). 같은 파일 안 `var(--x)` 참조를 풀고, 색 표기(`#fff` = `#FFFFFF`)·공백·대소문자를 정규화해 비교합니다.
 - 결과: `missing`·`mismatch`(차단, 종료 코드 2), `excepted`(프로젝트 예외와 사유), `extra`(승인 토큰이 아닌 프로젝트 변수, 정보), `expected_css`.
-- 예외: `ui-map except --token <이름> --reason "<사유>" --note "<사용자 문장>"`. 사유와 사용자 문장이 모두 필요합니다.
+- 예외: `ui-map except --token <이름> --reason "<사유>" --note "<사용자 문장>"`(같은 토큰이면 변경), 삭제는 `ui-map unexcept --token <이름> --reason --note`. 추가·변경·삭제 모두 사유와 사용자 문장이 필요하고, `exceptions.log`에 이전 기록과 함께 남습니다(지우지 않음).
+- 예외가 바뀌면 토큰 기준이 바뀝니다. 그 기준으로 검증된 UI 배치는 무효(`check` → stale)가 되어 `verify`로 다시 검사합니다(명령 출력의 `invalidated_batches`).
 - `token-audit [--batch Bxx]`: 배치 범위(없으면 `paths.source`) 파일의 직접 색 값(설정 시 길이 값)을 찾습니다. 기본은 경고(`[ui.audit] mode = "block"`이면 차단). 예외는 `ui-map except --audit-path <경로 패턴> [--value <값>] --reason --note`.
 - 새 토큰 이름이 필요하면 코드에서 만들지 않고 `/product-design`의 ②(UX Spec 04 개정)로 안내합니다.
 
@@ -90,6 +91,65 @@
 
 경고: `contract_not_found`(계약 파일에서 못 찾음), `ac_no_test_plan`, `new_unused`.
 
-## 5. 아직 하지 않는 것(M3.3 이후)
+## 5. 화면 상태 증거(M3.3)
 
-상태 증거(상태 ID 태그·E2 판정), 수동 증거(EM) 기록, 브라우저 검증 리포트, UI 검토·수정 요청 루프, UI 배치 사용자 승인 기본값 적용, Figma 입력·시각 비교(M3.7).
+UI Brief를 만든 배치(`.ai-workflow/build/ui/Bxx/brief.json`)만 대상입니다. 만들지 않은 배치는 M2 판정(AC 증거) 그대로입니다.
+`verify --batch Bxx`가 기존 실행·리포트 검증을 그대로 쓰고, 그 결과에서 상태 증거를 판정해 `build.json`의 `verification.ui`에 기록합니다.
+
+- 태그: AC와 같은 규칙입니다. 테스트 이름 `[SCR-001-ST2] …`(묶음 `[SCR-001-ST1, SCR-001-ST3]`), pb-json 케이스의 `states` 필드, JUnit property `state`/`states`, `tag_style = "prefix"`이면 `SCR-001-ST2 / AC-001:` 머리. 이름에 ID만 적힌 것은 E1(언급)입니다.
+- 판정: `verified`(E2: 유효한 실행에서 태그된 테스트·브라우저 결과 통과) · `failing` · `not_run` · `untested`(E0/E1) · `manual_only`(EM만) · `invalid_run`.
+- 목표: Must 화면의 정의된 상태(Brief `required: true`)는 **E2 필수**, 나머지는 경고. 필수 상태가 E2가 아니면 verify가 실패합니다.
+- 기록: 상태마다 증거의 출처(`test`·`browser`·EM ID), 단계, 케이스, 실행 ID·시각, 코드 버전(`code_tree`), 결과. AC ↔ 상태 연결(`ac_links`: 05의 AC→상태 + UI Plan `acs`)과 "AC는 통과했지만 연결 상태 증거 없음" 경고.
+- verify가 함께 확인하는 것: UI Brief가 현재 입력과 같은지(`brief_stale`), UI Plan이 현재 Brief로 검증됐는지(`ui_plan_not_validated`), `token-check`(불일치·누락 차단, 예외는 사유와 함께 기록), `token-audit`(프로필 mode대로).
+- 무효화: 화면별 입력 기준(02 화면 블록·연결된 05 AC 행·관련 VD·화면 CMP의 04 내용과 대응·UI Plan의 그 화면) + 토큰 기준(승인 토큰·출력 설정·예외) + UI Plan 컴포넌트 목록. 바뀌면 그 배치는 stale이 되고 `ui-evidence`가 영향받은 화면·상태를 보여 줍니다. 승인 문서 자체가 바뀌면 M2 규칙대로 계획 전체가 outdated입니다.
+
+### 수동 증거(EM)
+```
+evidence-manual add --batch Bxx --state SCR-002-ST3 [--ac AC-003] --check "<무엇을 어떻게 확인>" \
+  --method keyboard|screen_reader|visual|device|exploratory|other --result passed|failed [--file <근거 파일>] [--by <확인자>] --note "<사용자 확인 문장>"
+evidence-manual list [--batch Bxx]
+evidence-manual revoke --batch Bxx --id EM-001 --reason "<사유>" --note "<사용자 문장>"
+```
+- 사용자 확인 문장이 없으면 거부합니다(Claude가 대신 확인했다고 기록하지 않음). 구현 제출 이후, 실행 중 배치가 없을 때만 기록합니다.
+- 기록: 대상(상태·AC), 확인 내용·방법·결과, 근거 파일 해시(스크린샷은 `kind: screenshot` 첨부), 확인자·시각, 코드 버전(배치 범위 해시·HEAD), 화면 입력 기준.
+- EM은 실행 증거와 따로 표시합니다. **필수 상태의 E2를 대신하지 않고**(`manual_only`), AC 판정에도 반영하지 않습니다(`ac-report`에 표시만). 실패한 EM은 그 상태를 `failing`으로 만듭니다.
+- 코드·화면 입력·근거 파일이 바뀌면 EM은 `stale`입니다. verified·approved 배치에 EM을 추가·철회하면 그 배치는 재검증 대상(stale)입니다.
+
+## 6. 브라우저 검증(M3.4)
+
+엔진은 브라우저 도구를 설치·호출하지 않습니다. 프로필의 검증 단계가 낸 리포트 형식과 판정만 다룹니다.
+
+```toml
+[[verify.steps]]
+name = "browser"
+stage = "browser"                 # browser 또는 e2e
+run = "<프로젝트 명령>"
+requires = ["browser"]            # verify --available browser일 때만 실행, 아니면 not_run
+report = { format = "pb-ui", file = "ui.json" }   # 실행별 폴더($PB_REPORT_DIR)만. 고정 경로(path)는 거부
+```
+
+```json
+{ "format": "pb-ui-report/v1", "run_id": "<$PB_RUN_ID 그대로>", "tool": "...", "status": "completed|not_run", "reason": "...",
+  "results": [ { "screen": "SCR-001", "state": "SCR-001-ST1", "viewport": "mobile", "rendered": true, "console_errors": 0,
+                 "a11y": {"critical": 0, "serious": 1}, "overflow": false, "touch_target_violations": 0, "acs": ["AC-001"],
+                 "interactions": [ {"name": "좌석 선택", "passed": true, "core": true, "acs": ["AC-003"]} ],
+                 "screenshot": "shots/SCR-001-ST1-mobile.png" } ] }
+```
+
+| 판정 | 항목 |
+|---|---|
+| 차단 | `rendered: false`, 콘솔 오류 1개 이상, 접근성 critical, 핵심 상호작용 실패(02 행동은 `core: false`로 낮출 수 없음) |
+| 보고(경고) | 접근성 serious, `overflow`·`clipped`, 터치 영역 위반, 핵심이 아닌 상호작용 실패, 접근성 미검사, 프로필 `browser.viewports`에 없는 뷰포트, 배치 밖 화면·정의되지 않은 상태 |
+| 리포트 거부(`report_invalid`) | 잘못된 JSON·형식, `run_id`가 이번 실행과 다름(오래된 결과), 결과 없음, `rendered` 없이 스크린샷만, 스크린샷이 실행 폴더 밖·없음 |
+| 그 밖(M2 그대로) | 시간 초과 `timeout`, 실행 전에 만들어진 리포트, 리포트 없음, 종료 코드와 리포트 불일치 |
+| 미실행(`not_run`) | `requires` 환경 없음, 또는 도구가 `status: "not_run"` 보고 |
+
+- 통과한 결과는 그 상태의 E2 근거, `acs`는 AC 증거(M2 판정)로 들어갑니다. 결과는 화면 상태 ID·AC·실행 ID·코드 버전과 함께 기록됩니다. 스크린샷은 실행 폴더(`.ai-workflow/build/evidence/`, Git 제외)에 해시와 함께 남깁니다.
+- 필수 단계(`optional` 아님)가 `not_run`이면 M2 규칙대로 verify가 실패하고, `verification.ui.final_approval_blockers`에 남깁니다(최종 UI 승인 차단은 M3.5에서 사용). 선택 단계의 `not_run`은 경고로 기록합니다.
+- 선택형 어댑터 예시: `templates/ui-adapters/react-vite-playwright/`(엔진 코드 아님, 설치는 사용자 결정).
+
+`ui-evidence --batch Bxx`(읽기 전용): 상태별 증거·AC 연결·브라우저 판정·토큰 결과·EM 상태와, 지금 기준으로 영향받은 화면·상태.
+
+## 7. 아직 하지 않는 것(M3.5 이후)
+
+UI 검토·수정 요청 루프(`ui-review`·피드백), UI 배치 사용자 승인 기본값과 `final_approval_blockers`로 최종 승인 차단, PoC 실행(M3.6), Figma 입력·시각 비교(M3.7).

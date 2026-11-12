@@ -418,8 +418,10 @@ def profile_problems(prof: dict) -> list[str]:
     for s in prof["verify"].get("steps", []):
         rep = s.get("report") if isinstance(s, dict) else None
         if rep is not None:
-            if not isinstance(rep, dict) or rep.get("format") not in ("pb-json", "junit-xml") or bool(rep.get("file")) == bool(rep.get("path")):
-                errs.append(f"verify.steps[{s.get('name')}].report는 format(pb-json|junit-xml)과 file(실행별 폴더 안) 또는 path(고정 경로) 중 하나가 필요합니다")
+            if not isinstance(rep, dict) or rep.get("format") not in ("pb-json", "junit-xml", "pb-ui") or bool(rep.get("file")) == bool(rep.get("path")):
+                errs.append(f"verify.steps[{s.get('name')}].report는 format(pb-json|junit-xml|pb-ui)과 file(실행별 폴더 안) 또는 path(고정 경로) 중 하나가 필요합니다")
+            elif rep.get("format") == "pb-ui" and (rep.get("path") or s.get("stage") not in ("browser", "e2e")):
+                errs.append(f"verify.steps[{s.get('name')}]: pb-ui(브라우저 검증 리포트)는 stage = browser 또는 e2e이고 report.file(실행별 폴더)만 씁니다")
             elif rep.get("path") and (rep["path"].startswith("/") or ".." in rep["path"].split("/")):
                 errs.append(f"verify.steps[{s.get('name')}].report.path는 저장소 안 상대 경로여야 합니다")
             elif rep.get("file") and ("/" in rep["file"] or ".." in rep["file"]):

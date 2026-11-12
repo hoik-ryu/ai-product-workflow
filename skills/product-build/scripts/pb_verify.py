@@ -23,9 +23,10 @@ from pathlib import Path
 from pb_core import BUILD_DIR_REL, digest, is_protected, now, sha_file, write_owned
 from pb_exec import WEAKEN_RE, _ignored, in_patterns
 from pb_scan import is_test_path
+import pb_uiev as UV
 
 EVIDENCE_REL = f"{BUILD_DIR_REL}/evidence"
-REPORT_FORMATS = ("pb-json", "junit-xml")
+REPORT_FORMATS = ("pb-json", "junit-xml", "pb-ui")  # pb-ui: 브라우저 검증 리포트 pb-ui-report/v1(M3.4)
 CASE_STATUSES = ("passed", "failed", "error", "skipped")
 MAX_REPORT_BYTES = 20_000_000
 HISTORY_KEEP = 12
@@ -145,7 +146,8 @@ def parse_report(path: Path, fmt: str, style: str) -> list[dict]:
             if not isinstance(c, dict) or not c.get("name") or c.get("status") not in CASE_STATUSES:
                 raise ReportError(f"케이스 형식 오류: {str(c)[:120]}")
             cases.append({"id": str(c.get("id") or c["name"]), "name": str(c["name"]), "file": c.get("file"), "status": c["status"],
-                          "acs": _tags(c["name"], c.get("acs"), style), "mentions": sorted(set(AC_ANY.findall(c["name"])))})
+                          "acs": _tags(c["name"], c.get("acs"), style), "mentions": sorted(set(AC_ANY.findall(c["name"]))),
+                          "states": UV.state_tags(c["name"], c.get("states"), style)})
     elif fmt == "junit-xml":
         try:
             root = ET.parse(path).getroot()
@@ -164,9 +166,11 @@ def parse_report(path: Path, fmt: str, style: str) -> list[dict]:
                 status = "passed"
             props = [p.get("value") for p in tc.iter("property") if (p.get("name") or "").lower() in ("ac", "acs", "acceptance_criteria")]
             explicit = [a for v in props for a in AC_ANY.findall(v or "")]
+            sprops = [p.get("value") for p in tc.iter("property") if (p.get("name") or "").lower() in ("state", "states")]
             full = f"{cls} {name}".strip()
             cases.append({"id": f"{cls}::{name}", "name": name, "classname": cls, "file": tc.get("file"), "status": status,
-                          "acs": _tags(name, explicit, style), "mentions": sorted(set(AC_ANY.findall(full)))})
+                          "acs": _tags(name, explicit, style), "mentions": sorted(set(AC_ANY.findall(full))),
+                          "states": UV.state_tags(name, [s for v in sprops for s in UV.STATE_ID.findall(v or "")], style)})
     else:
         raise ReportError(f"지원하지 않는 형식: {fmt}")
     # 같은 케이스가 여러 번 나오면 가장 나쁜 결과로(오염·중복 리포트 대비)
@@ -228,17 +232,30 @@ def run_steps(project: Path, prof: dict, batch: str, steps: list[dict], availabl
                 problem = "리포트가 이번 실행 전에 만들어진 파일임(오래된 리포트)"
             elif fixed and pre is not None and sha_file(src) == pre:
                 problem = "고정 경로 리포트가 이번 실행에서 바뀌지 않음(이전 결과 재사용 의심)"
-            cases = []
-            if not problem:
+            cases, ui_rep = [], None
+            if not problem and fmt == "pb-ui":
+                if fixed:
+                    problem = "브라우저 리포트는 실행별 폴더(file)에만 씁니다(고정 경로는 오래된 결과 위험)"
+                else:
+                    try:
+                        ui_rep = UV.parse_ui_report(src, run_id, run_dir / "reports")
+                        cases = ui_rep["cases"]
+                    except UV.UIReportError as e:
+                        problem = f"리포트 해석 실패: {e}"
+            elif not problem:
                 try:
                     cases = parse_report(src, fmt, style)
                 except ReportError as e:
                     problem = f"리포트 해석 실패: {e}"
+            if ui_rep is not None and ui_rep["status"] == "not_run":
+                rec.update(status="not_run", reason=f"브라우저 검증 미실행: {ui_rep['reason']}", ui_report={"tool": ui_rep["tool"], "results": []})
+                results.append(rec)
+                continue
             if problem:
                 rec.update(status="report_invalid", reason=problem)
                 results.append(rec)
                 continue
-            dest_rel = f"{run_dir_rel}/reports/{s['name']}.{ 'json' if fmt == 'pb-json' else 'xml'}"
+            dest_rel = f"{run_dir_rel}/reports/{s['name']}.{ 'xml' if fmt == 'junit-xml' else 'json'}"
             if src.resolve() != (project / dest_rel).resolve():
                 write_owned(project, dest_rel, src.read_text(encoding="utf-8", errors="replace"))
             for c in cases:  # 케이스 파일(저장소 기준) 추정과 그 내용 해시(테스트가 바뀌었는지 판정용)
@@ -264,6 +281,8 @@ def run_steps(project: Path, prof: dict, batch: str, steps: list[dict], availabl
             rec["report"] = {"format": fmt, "sha256": sha_file(project / dest_rel), "path": dest_rel, "cases": len(cases),
                              "failed": len(bad), "passed": sum(1 for c in cases if c["status"] == "passed")}
             rec["cases"] = cases
+            if ui_rep is not None:
+                rec["ui_report"] = {k: ui_rep[k] for k in ("tool", "base_url", "results")}
             if not cases:
                 rec.update(status="report_empty", reason="리포트에 테스트 케이스가 없음")
             elif code != 0 and not bad:

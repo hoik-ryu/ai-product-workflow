@@ -33,13 +33,14 @@ from pb_scan import (  # noqa: E402
 from pb_adopt import analyze  # noqa: E402
 import pb_ledger as L  # noqa: E402
 import pb_ui as U  # noqa: E402
+import pb_uiev as UV  # noqa: E402
 from pb_exec import (  # noqa: E402
     DEP_LEVELS, EVIDENCE_REL, LOCK_REL, acquire_lock, changed_vs, classify, diff_states, ensure_gitignore, head_sha, heartbeat,
     in_patterns, load_checkpoint, lock_age_minutes, next_task, read_lock, release_lock, require_lock, save_base_tests, states_now, task_order,
     write_checkpoint,
 )
 from pb_verify import (  # noqa: E402
-    batch_scope_files, batch_verdict, deps_affecting, deps_tree, evaluate, load_run, mentions_in_tests, run_steps, step_summary,
+    batch_scope_files, batch_verdict, code_files, deps_affecting, deps_tree, evaluate, load_run, mentions_in_tests, run_steps, step_summary,
     tracked_files, tree_hash, update_history,
 )
 
@@ -1026,6 +1027,13 @@ def freshness(project: Path, prof: dict, bid: str, b: dict, plan_batch: dict | N
         return "검증 이후 배치 범위의 코드·테스트가 바뀌었습니다"
     if "deps" in v and deps_affecting(deps_tree(project, prof), scope) != v["deps"]:
         return "검증 이후 이 배치에 영향을 주는 의존성 파일(lockfile 등)이 바뀌었습니다"
+    ui = v.get("ui") or {}
+    if ui.get("active") and ui.get("basis"):  # M3.3: UI Plan·승인 디자인 입력·토큰 기준(예외 포함)이 바뀌면 무효
+        try:
+            uplan, umap = _ui_inputs(project, bid)
+            return UV.describe_changes(UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap)))
+        except Blocked as e:
+            return f"UI 입력을 읽을 수 없습니다: {e.payload.get('message')}"
     return None
 
 
@@ -1271,6 +1279,10 @@ def cmd_verify(a) -> None:
     legacy = ((b.get("run") or {}).get("submitted") or {}).get("kind") == "adopt"
     ev = evaluate(acs, effective_targets(b), run, hist, mentioned, run["tree_after"], set(b.get("fi_accepted", {})), legacy, project)
     ok, reasons = batch_verdict(run, ev)
+    ui = _ui_evaluate(project, st, prof, a.batch, b, run, ev) if _ui_active(project, a.batch) else None
+    if ui:  # M3.3·M3.4: 필수 상태 E2·브라우저 차단 항목·토큰 검사·UI Plan 검증
+        reasons += ui["reasons"]
+        ok = not reasons
     summary = {"run_id": run["run_id"], "dir": run["dir"], "digest": run["digest"], "at": run["at"], "valid": run["valid"],
                "steps": step_summary(run), "counts": {k: sum(1 for e in ev.values() if e["status"] == k) for k in
                                                      ("verified", "insufficient", "failing", "not_run", "untested", "invalid_run")}}
@@ -1290,6 +1302,8 @@ def cmd_verify(a) -> None:
                     regressed[oid] = hit
     out = {"ok": True, "batch": a.batch, "mode": "probe" if probe else "final", "run": {k: summary[k] for k in ("run_id", "valid", "steps")},
            "acs": ev, "counts": summary["counts"], "regressed_batches": regressed}
+    if ui:
+        out["ui"] = _ui_compact(ui)
     limit = prof["execution"]["max_retries"]
     att = b["run"]["attempts"].setdefault("verify", {"consecutive_failures": 0, "total": 0, "last": None})
     att["total"] += 1
@@ -1319,6 +1333,8 @@ def cmd_verify(a) -> None:
         b["verification"] = summary | {"evaluation": ev, "reasons": reasons, "code_tree": run["tree_after"], "case_files": case_files,
                                        "scope_tree": tree_hash(project, scope), "deps": deps_affecting(run["deps_tree"], scope),
                                        "targets": effective_targets(b)}
+        if ui:
+            b["verification"]["ui"] = ui
         if ok and prev_status == "approved" and prev_scope == b["verification"]["scope_tree"]:
             b["status"] = "approved"  # 같은 코드로 다시 검증: 최종 승인 유지
         elif ok:
@@ -1366,6 +1382,14 @@ def cmd_ac_report(a) -> None:
             rec["target_overrides"] = b["target_overrides"]
         if b.get("approvals"):
             rec["approvals"] = [{k: x.get(k) for k in ("at", "statement", "run_id", "valid")} for x in b["approvals"]]
+        if v and v.get("ui"):  # M3.3·M3.4 요약(AC 판정은 위 그대로)
+            ui = v["ui"]
+            rec["ui"] = {"states": ui.get("counts"), "browser": (ui.get("browser") or {}).get("status"),
+                         "final_approval_blockers": ui.get("final_approval_blockers"), "ac_links": ui.get("ac_links")}
+        ems = [m for m in b.get("manual_evidence") or [] if m["targets"]["acs"]]
+        if ems:
+            rec["manual"] = [{"id": m["id"], "acs": m["targets"]["acs"], "result": m["result"], "revoked": bool(m.get("revoked")),
+                              "note": "수동 증거(EM) — AC 판정에는 반영하지 않음"} for m in ems]
         out["batches"][bid] = rec
     emit(out)
 
@@ -1710,25 +1734,46 @@ def cmd_ui_map(a) -> None:
         umap["tokens"] = cfg
         U.save_map(project, umap, f"tokens {fmt}", note)
         emit({"ok": True, "tokens": cfg})
-    if a.action == "except":
+    if a.action in ("except", "unexcept"):
+        # 예외는 사유 + 사용자 문장이 있어야 하고, 추가·변경·삭제 모두 이력(exceptions.log)에 원래 기록과 함께 남깁니다.
+        # 토큰 기준(예외 포함)이 바뀌면 그 기준으로 검증된 UI 배치는 무효(stale)가 되어 다시 검사합니다(freshness).
         if not (a.reason or "").strip() or not note:
-            block("approval_statement_required", "예외는 사유(--reason)와 사용자 승인 문장(--note)이 모두 필요합니다.")
+            block("approval_statement_required", "예외 추가·변경·삭제는 사유(--reason)와 사용자 승인 문장(--note)이 모두 필요합니다.")
+        ex = umap["exceptions"]
         if a.token:
-            approved, _src = U.approved_tokens(project)
-            if a.token not in approved:
-                block("unknown_token", f"{a.token}는 승인된 토큰이 아닙니다.")
-            umap["exceptions"]["tokens"] = [e for e in umap["exceptions"]["tokens"] if e["token"] != a.token]
-            umap["exceptions"]["tokens"].append({"token": a.token, "reason": a.reason.strip(), "note": note, "at": now()})
-            U.save_map(project, umap, f"except token {a.token}", note)
-            emit({"ok": True, "exception": umap["exceptions"]["tokens"][-1]})
-        if a.audit_path:
+            kind, key = "token", lambda e: e["token"] == a.token
+            if a.action == "except":
+                approved, _src = U.approved_tokens(project)
+                if a.token not in approved:
+                    block("unknown_token", f"{a.token}는 승인된 토큰이 아닙니다.")
+                entry = {"token": a.token, "reason": a.reason.strip(), "note": note, "at": now()}
+        elif a.audit_path:
             if U.bad_path(a.audit_path.replace("*", "x")):
                 block("invalid_arguments", "--audit-path는 저장소 안 경로 패턴이어야 합니다.")
-            e = {"path": a.audit_path, "value": a.value or "", "reason": a.reason.strip(), "note": note, "at": now()}
-            umap["exceptions"]["audit"].append(e)
-            U.save_map(project, umap, f"except audit {a.audit_path} {a.value or '*'}", note)
-            emit({"ok": True, "exception": e})
-        block("invalid_arguments", "--token 또는 --audit-path가 필요합니다.")
+            kind, key = "audit", lambda e: e["path"] == a.audit_path and (e.get("value") or "") == (a.value or "")
+            entry = {"path": a.audit_path, "value": a.value or "", "reason": a.reason.strip(), "note": note, "at": now()}
+        else:
+            block("invalid_arguments", "--token 또는 --audit-path가 필요합니다.")
+        lst = ex["tokens" if kind == "token" else "audit"]
+        prev = next((e for e in lst if key(e)), None)
+        if a.action == "unexcept":
+            if not prev:
+                block("not_excepted", "그런 예외가 없습니다.")
+            lst.remove(prev)
+            op, entry = "remove", None
+        else:
+            if prev:
+                lst.remove(prev)
+            lst.append(entry)
+            op = "replace" if prev else "add"
+        ex["log"].append({"op": op, "kind": kind, "entry": entry, "previous": prev, "reason": a.reason.strip(), "note": note, "at": now()})
+        U.save_map(project, umap, f"{op} {kind} exception {a.token or a.audit_path} {a.value or ''}".strip(), note)
+        new_basis = UV.tokens_basis(project, umap)
+        affected = sorted(bid for bid, x in ((st or {}).get("batches") or {}).items()
+                          if ((x.get("verification") or {}).get("ui") or {}).get("basis", {}).get("tokens") not in (None, new_basis))
+        emit({"ok": True, "op": op, "kind": kind, "exception": entry, "previous": prev, "invalidated_batches": affected,
+              "note": ("토큰 기준이 바뀌어 위 배치의 UI 검증 결과는 무효입니다. check로 stale 기록 후 verify --batch로 다시 검사합니다."
+                       if affected else "이 기준으로 검증된 UI 배치가 아직 없습니다. 다음 verify부터 반영됩니다.")})
     block("invalid_arguments", f"알 수 없는 동작: {a.action}")
 
 
@@ -1819,6 +1864,231 @@ def cmd_ui_plan_validate(a) -> None:
     emit({"batch": a.batch, **r, "record": U.ui_rel(a.batch, "validation.json")}, 0 if r["ok"] else 2)
 
 
+# ---------------------------------------------------------------- M3.3·M3.4: 화면 상태 증거·수동 증거·브라우저 검증
+def _ui_active(project: Path, bid: str) -> bool:
+    """이 배치가 M3 UI 흐름(UI Brief 생성)을 쓰는지. 쓰지 않는 배치는 M2 판정 그대로입니다."""
+    d = U.read_json(project, U.ui_rel(bid, "brief.json"))
+    return bool(d) and not d.get("_invalid")
+
+
+def _ui_inputs(project: Path, bid: str):
+    uplan = U.read_json(project, U.ui_rel(bid, "plan.json"))
+    if uplan is not None and (uplan.get("_invalid") or not isinstance(uplan, dict)):
+        uplan = None
+    return uplan, U.load_map(project)
+
+
+def _em_scope(project: Path, prof: dict, bid: str, b: dict) -> str:
+    return tree_hash(project, batch_scope_files(project, prof, _plan_batches(project).get(bid) or {}, b, []))
+
+
+def _em_now(project: Path, prof: dict, bid: str, b: dict) -> list[dict]:
+    recs = b.get("manual_evidence") or []
+    if not recs:
+        return []
+    scope = _em_scope(project, prof, bid, b)
+    uplan, umap = _ui_inputs(project, bid)
+    basis = {s: UV.screen_basis(project, s, uplan, umap) for m in recs for s in (m.get("basis") or {})}
+    out = []
+    for m in recs:
+        status, why = UV.em_status(project, m, scope, basis)
+        out.append({**m, "status_now": status, "status_reason": why})
+    return out
+
+
+def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: dict, ev: dict) -> dict:
+    res = {"format": UV.UI_EVIDENCE_FORMAT, "active": True, "reasons": [], "warnings": []}
+    R, W = res["reasons"], res["warnings"]
+    try:
+        _st, _prof, uprof, plan, dinfo = _ui_batch(project, bid)
+        uplan, umap = _ui_inputs(project, bid)
+    except Blocked as e:
+        R.append(f"[ui_inputs] UI 입력을 확인할 수 없습니다: {e.payload.get('message')}")
+        return res
+    now_brief = U.build_brief(project, st, plan, bid, prof, uprof, dinfo, load_model(project), umap)
+    stored = U.read_json(project, U.ui_rel(bid, "brief.json")) or {}
+    val = U.read_json(project, U.ui_rel(bid, "validation.json")) or {}
+    plan_sha = sha_file(project / U.ui_rel(bid, "plan.json"))
+    validated = bool(uplan and val.get("ok") and val.get("brief_digest") == now_brief["digest"] and val.get("plan_sha256") == plan_sha)
+    if stored.get("digest") != now_brief["digest"]:
+        R.append("[brief_stale] UI Brief가 현재 승인 문서·계획·대응표와 다릅니다(ui-brief → UI Plan 확인 → ui-plan-validate)")
+    if not uplan:
+        R.append(f"[ui_plan_missing] UI Plan({U.ui_rel(bid, 'plan.json')})이 없거나 JSON이 아닙니다")
+    elif not validated:
+        R.append("[ui_plan_not_validated] UI Plan이 현재 UI Brief 기준으로 검증(ui-plan-validate 통과)되지 않았습니다")
+    tests = [f for f in code_files(project, prof) if is_test_path(f)]
+    ems = [m for m in _em_now(project, prof, bid, b) if m["status_now"] == "active"]
+    states = UV.evaluate_states(now_brief, run, UV.state_mentions(project, tests), ems)
+    browser = UV.browser_summary(run, prof["verify"]["steps"], now_brief, (prof.get("browser") or {}).get("viewports") or [])
+    links = UV.ac_links(now_brief, uplan, ev, states)
+    tokens = {}
+    if umap and umap.get("tokens"):
+        try:
+            tc = U.token_check(project, umap)
+            tokens["check"] = {k: tc.get(k) for k in ("ok", "source", "format", "counts", "missing", "mismatch", "excepted", "stale_exceptions")}
+            if not tc["ok"]:
+                R.append("[token_mismatch] 승인 토큰과 다르거나 없는 값: " + ", ".join(x["token"] for x in tc["missing"] + tc["mismatch"]))
+        except Blocked as e:
+            tokens["check"] = {"ok": False, "error": e.payload.get("error"), "message": e.payload.get("message")}
+            R.append(f"[token_check_failed] {e.payload.get('message')}")
+    else:
+        tokens["check"] = {"status": "not_configured"}
+        W.append("토큰 출력이 설정되지 않아 토큰 비교를 하지 않았습니다(ui-map tokens)")
+    ta = U.token_audit(project, prof, uprof, plan, bid, umap or U.empty_map())
+    tokens["audit"] = {"ok": ta["ok"], "mode": ta["mode"], "counts": ta["counts"], "findings": ta["findings"][:20]}
+    if not ta["ok"]:
+        R.append(f"[token_audit] 직접 값 {ta['counts']['findings']}건(프로필 ui.audit.mode = block)")
+    elif ta["findings"]:
+        W.append(f"직접 값 {ta['counts']['findings']}건(감사 mode=warn, 차단 아님)")
+    for sid, r in states.items():
+        if r["required"] and r["status"] != "verified":
+            R.append(f"[state_evidence] {sid}(필수 상태, 목표 E2): {r['status']} — {r['reason']}")
+        elif not r["required"] and r["status"] != "verified":
+            W.append(f"{sid}(필수 아님): {r['status']}")
+    R += [f"[browser] {x}" for x in browser["blocking"]]
+    W += browser["warnings"]
+    for ac, l in links.items():
+        if l["mismatch"]:
+            W.append(f"{ac}: AC는 verified인데 연결된 상태 {', '.join(l['gaps'])}의 증거가 부족합니다")
+    blockers = list(browser["final_approval_blockers"]) + [f"{sid}: 필수 상태 {r['status']}" for sid, r in states.items()
+                                                           if r["required"] and r["status"] != "verified"]
+    res.update(brief_digest=now_brief["digest"], ui_plan_sha=plan_sha, ui_plan_validated=validated,
+               basis=UV.current_basis(project, list(now_brief["screens"]), uplan, umap),
+               code={"run_id": run["run_id"], "at": run["at"], "valid": run["valid"], "code_tree": run["tree_after"],
+                     "code_only_tree": run.get("code_only_tree"), "head": head_sha(project)},
+               states=states, ac_links=links, browser=browser, tokens=tokens,
+               manual=[{"id": m["id"], "result": m["result"], "targets": m["targets"], "method": m["method"]} for m in ems],
+               counts={k: sum(1 for r in states.values() if r["status"] == k) for k in
+                       ("verified", "insufficient", "failing", "not_run", "untested", "manual_only", "invalid_run")},
+               final_approval_blockers=blockers)
+    return res
+
+
+def _ui_compact(ui: dict) -> dict:
+    return {"states": {k: {x: v.get(x) for x in ("status", "level", "required", "target")} for k, v in (ui.get("states") or {}).items()},
+            "browser": {k: (ui.get("browser") or {}).get(k) for k in ("status", "steps", "blocking", "final_approval_blockers", "coverage")},
+            "tokens": {k: {x: v.get(x) for x in ("ok", "status", "counts", "mode", "error")} for k, v in (ui.get("tokens") or {}).items()},
+            "ac_links": ui.get("ac_links"), "reasons": ui.get("reasons"), "warnings": ui.get("warnings"),
+            "final_approval_blockers": ui.get("final_approval_blockers")}
+
+
+def cmd_evidence_manual(a) -> None:
+    """수동 증거(EM) 기록·조회·철회. 테스트 실행 증거와 구분되며, 필수 상태의 E2를 대신하지 않습니다."""
+    project = project_of(a)
+    st = require_state(project)
+    prof = profile_or_block(project)
+    if a.action == "list":
+        out = {}
+        for bid, b in st["batches"].items():
+            if a.batch and bid != a.batch:
+                continue
+            recs = _em_now(project, prof, bid, b)
+            if recs:
+                out[bid] = [{k: m.get(k) for k in ("id", "targets", "check", "method", "result", "statement", "by", "at", "files", "status_now",
+                                                   "status_reason")} for m in recs]
+        emit({"ok": True, "manual_evidence": out, "note": "EM은 사람이 확인한 기록입니다. 실행 증거(E2·E3)와 따로 표시하며 필수 상태의 E2를 대신하지 않습니다."})
+    b = st["batches"].get(a.batch or "")
+    if not b:
+        block("unknown_batch", "배치(--batch)가 없습니다.")
+    note = (a.note or "").strip()
+    if a.action == "add":
+        if not note:
+            block("approval_statement_required", "수동 확인은 사용자 확인 문장(--note)이 필요합니다(Claude가 대신 확인했다고 기록하지 않음).")
+        if not (a.check or "").strip():
+            block("invalid_arguments", "--check(무엇을 어떻게 확인했는지)가 필요합니다.")
+        if a.method not in UV.EM_METHODS:
+            block("invalid_arguments", f"--method는 {'/'.join(UV.EM_METHODS)} 중 하나입니다.")
+        if a.result not in UV.EM_RESULTS:
+            block("invalid_arguments", "--result는 passed 또는 failed입니다.")
+        states, acs = sorted(set(a.state or [])), sorted(set(a.ac or []))
+        if not states and not acs:
+            block("invalid_arguments", "--state(화면 상태 ID) 또는 --ac 중 하나 이상이 필요합니다.")
+        if b["status"] not in ("implemented", "verify_failed", "verified", "approved", "stale", "imported") or not (b.get("run") or {}).get("submitted"):
+            block("not_implemented", f"{a.batch} 상태가 {b['status']}입니다. 구현 제출 이후의 코드에만 수동 증거를 기록합니다.")
+        if read_lock(project) is not None:
+            block("active_batch_exists", "실행 중인 배치가 있어 기록하지 않았습니다(코드가 바뀌는 중).", lock=read_lock(project))
+        bad_ac = [x for x in acs if x not in (read_plan_batch(project, a.batch).get("acs") or [])]
+        if bad_ac:
+            block("unknown_ac", "이 배치의 AC가 아닙니다.", acs=bad_ac)
+        if states:
+            brief = U.read_json(project, U.ui_rel(a.batch, "brief.json"))
+            if not brief or brief.get("_invalid") or brief.get("digest") != U.digest({k: v for k, v in brief.items() if k != "digest"}):
+                block("no_ui_brief", f"상태 증거는 UI Brief의 정의된 상태에만 기록합니다(ui-brief --batch {a.batch}).")
+            defined = {x["id"] for sb in brief["screens"].values() for x in sb["states"] if x["defined"]}
+            unknown = [x for x in states if x not in defined]
+            if unknown:
+                block("unknown_state", "이 배치 화면의 정의된 상태가 아닙니다(02 문서).", states=unknown)
+        files = []
+        for f in a.file or []:
+            if U.bad_path(f) or not (project / f).is_file():
+                block("invalid_arguments", f"근거 파일 {f}은 저장소 안의 있는 파일이어야 합니다.")
+            if U.is_preview(f) or is_protected(f):
+                block("protected_path", f"{f}는 디자인 프리뷰·보호 경로입니다(구현 결과의 근거가 아님).")
+            files.append(UV.em_file_record(project, f))
+        uplan, umap = _ui_inputs(project, a.batch)
+        screens = sorted({x.rsplit("-", 1)[0] for x in states})
+        rec = {"id": UV.next_em_id(st), "kind": "manual", "batch": a.batch, "targets": {"states": states, "acs": acs},
+               "check": a.check.strip(), "method": a.method, "result": a.result, "files": files, "statement": note, "by": (a.by or "").strip(),
+               "at": now(), "code": {"scope_tree": _em_scope(project, prof, a.batch, b), "head": head_sha(project)},
+               "basis": {s: UV.screen_basis(project, s, uplan, umap) for s in screens},
+               "grants": "EM — 실행 증거(E2)와 별개. 필수 상태의 E2를 대신하지 않음"}
+        b.setdefault("manual_evidence", []).append(rec)
+        why = f"수동 증거 추가({rec['id']})"
+    elif a.action == "revoke":
+        if not note or not (a.reason or "").strip():
+            block("approval_statement_required", "철회는 사유(--reason)와 사용자 문장(--note)이 필요합니다.")
+        rec = next((m for m in b.get("manual_evidence") or [] if m["id"] == a.id), None)
+        if not rec:
+            block("unknown_evidence", f"{a.batch}에 {a.id} 기록이 없습니다.")
+        if rec.get("revoked"):
+            emit({"ok": True, "status": "already_revoked", "id": a.id})
+        rec["revoked"] = {"at": now(), "reason": a.reason.strip(), "statement": note}
+        why = f"수동 증거 철회({a.id})"
+    else:
+        block("invalid_arguments", f"알 수 없는 동작: {a.action}")
+    if b["status"] in DONE_STATES:  # 판정 입력이 바뀜 → 재검증
+        if b["status"] == "approved":
+            _invalidate_approval(b, why)
+        b["status"] = "stale"
+        b["verification"].update(stale_reason=why, stale_at=now())
+    add_history(st, "batch", "manual_evidence", None, f"{a.batch}: {why} — {note[:120]}")
+    save_state(project, st)
+    shots = [f["path"] for f in rec.get("files") or [] if f["kind"] == "screenshot"]
+    emit({"ok": True, "evidence": {k: rec.get(k) for k in ("id", "targets", "method", "result", "files", "at", "revoked")}, "status": b["status"],
+          "note": "수동 증거(EM)로 기록했습니다. 실행 증거와 따로 표시하고, 필수 상태의 E2를 대신하지 않습니다."
+                  + (" 스크린샷은 첨부일 뿐 E2 근거가 아닙니다." if shots else ""),
+          "next": f"verify --batch {a.batch}" if b["status"] == "stale" else None})
+
+
+def cmd_ui_evidence(a) -> None:
+    """UI 증거 요약(읽기 전용): 상태별 증거·AC 연결·브라우저 판정·토큰 검사·수동 증거, 지금 기준으로 영향받은 화면."""
+    project = project_of(a)
+    st = require_state(project)
+    prof = profile_or_block(project)
+    b = st["batches"].get(a.batch or "")
+    if not b:
+        block("unknown_batch", f"{a.batch}가 없습니다.")
+    v = b.get("verification") or {}
+    ui = v.get("ui")
+    out = {"ok": True, "batch": a.batch, "status": b["status"], "ui_flow": _ui_active(project, a.batch)}
+    if ui and ui.get("basis"):
+        uplan, umap = _ui_inputs(project, a.batch)
+        ch = UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap))
+        out["verification"] = {"run_id": v.get("run_id"), "at": v.get("at"), "code": ui.get("code"), **_ui_compact(ui),
+                               "evidence": {k: {x: r.get(x) for x in ("status", "level", "required", "evidence", "manual", "reason")}
+                                            for k, r in (ui.get("states") or {}).items()}}
+        out["affected_now"] = {"screens": ch["screens"], "states": sorted(k for k, r in (ui.get("states") or {}).items() if r["screen"] in ch["screens"]),
+                               "tokens": ch["tokens"], "ui_plan_components": ch["ui_plan_components"]}
+        out["freshness_problem"] = freshness(project, prof, a.batch, b, _plan_batches(project).get(a.batch))
+    else:
+        out["verification"] = None
+        out["note"] = ("UI 흐름을 쓰는 배치지만 UI 증거가 있는 최종 검증이 아직 없습니다(verify --batch)." if out["ui_flow"]
+                       else "이 배치는 UI Brief를 만들지 않아 M2 판정(AC 증거)만 씁니다.")
+    out["manual"] = [{k: m.get(k) for k in ("id", "targets", "method", "result", "at", "status_now", "status_reason")}
+                     for m in _em_now(project, prof, a.batch, b)]
+    emit(out)
+
+
 # ---------------------------------------------------------------- 진입점
 class JsonArgParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -1882,7 +2152,7 @@ def main() -> None:
     s.add_argument("--reason", default=""); s.add_argument("--note", default="")
     s = add("accept-fault-injection", cmd_accept_fi); s.add_argument("--batch", required=True); s.add_argument("--ac", required=True); s.add_argument("--note", default="")
     s = add("guard", cmd_guard); s.add_argument("--path", action="append"); s.add_argument("--base"); s.add_argument("--batch")
-    s = add("ui-map", cmd_ui_map); s.add_argument("action", choices=("show", "check", "candidates", "register", "remove", "tokens", "except"))
+    s = add("ui-map", cmd_ui_map); s.add_argument("action", choices=("show", "check", "candidates", "register", "remove", "tokens", "except", "unexcept"))
     s.add_argument("--batch"); s.add_argument("--cmp"); s.add_argument("--source", default="existing"); s.add_argument("--path"); s.add_argument("--export")
     s.add_argument("--package"); s.add_argument("--replace", action="store_true"); s.add_argument("--note", default="")
     s.add_argument("--file"); s.add_argument("--format"); s.add_argument("--var-pattern"); s.add_argument("--export-cmd"); s.add_argument("--alias", action="append")
@@ -1891,6 +2161,11 @@ def main() -> None:
     s = add("token-audit", cmd_token_audit); s.add_argument("--batch")
     s = add("ui-brief", cmd_ui_brief); s.add_argument("--batch", required=True); s.add_argument("--full", action="store_true")
     s = add("ui-plan-validate", cmd_ui_plan_validate); s.add_argument("--batch", required=True)
+    s = add("evidence-manual", cmd_evidence_manual); s.add_argument("action", choices=("add", "list", "revoke")); s.add_argument("--batch")
+    s.add_argument("--state", action="append"); s.add_argument("--ac", action="append"); s.add_argument("--check", default="")
+    s.add_argument("--method", default="other"); s.add_argument("--result", default=""); s.add_argument("--file", action="append")
+    s.add_argument("--by", default=""); s.add_argument("--note", default=""); s.add_argument("--id"); s.add_argument("--reason", default="")
+    s = add("ui-evidence", cmd_ui_evidence); s.add_argument("--batch", required=True)
     a = ap.parse_args()
     try:
         a.fn(a)
