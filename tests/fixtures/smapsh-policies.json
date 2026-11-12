@@ -1,0 +1,21 @@
+{
+  "_source": "SMAPSH(badminton-playbook) docs/workflow-proposals/b3-policy-open-items.md(P1–P8), b4-policy-open-items.md(Q1–Q7)을 2026-11-12 읽기 전용으로 요약. 엔진 코드가 아니라 원장 시범 등록용 입력입니다.",
+  "_classification": "차단 기준: 보안·권한·개인정보·되돌리기 어려운 데이터·외부 계약(API) 또는 승인 명세와 다른 행동(①). 되돌리기 쉬운 임시값(가중치·기본값·문구·판정 기준)은 비차단. 분류는 Claude의 분석이며 사용자 확인 대상입니다.",
+  "items": [
+    {"key": "P1", "type": "policy", "screens": ["SCR-204"], "title": "새 세션 옵션 기본값", "provisional": "레벨별, 밸런스·성별·공평성 켜짐, 중복 회피 꺼짐", "blocking": false, "rationale": "화면 기본값(언제든 바꿀 수 있음)"},
+    {"key": "P2", "type": "policy", "screens": ["SCR-202"], "title": "레벨별 방식과 성별 조합의 관계", "provisional": "성별 조합 먼저, 그 안에서 레벨·밸런스", "blocking": false, "rationale": "원본 문서에 사용자 방향 결정이 적혀 있으나 승인 문서에 없음 → 사용자가 decide로 확인하고 C-01·C-03 문구 반영 제안", "docs": ["docs/planning/02-prd.md"]},
+    {"key": "P3", "type": "policy", "screens": ["SCR-202"], "title": "만난 상대 반복 최소화의 가중", "provisional": "상대 반복은 가장 낮은 우선순위", "blocking": false, "rationale": "알고리즘 가중치(되돌리기 쉬움)"},
+    {"key": "P4", "type": "policy", "screens": ["SCR-202"], "title": "게임 수 공평성을 끈 경우 출전자 선택", "provisional": "직전 대기자 우선 + 시드 순서", "blocking": false, "rationale": "알고리즘 기준(되돌리기 쉬움)"},
+    {"key": "P5", "type": "policy", "screens": ["SCR-202"], "title": "'밸런스 완화' 판정 기준", "provisional": "최소 가능 차이보다 크면 완화", "blocking": false, "rationale": "표시 기준(되돌리기 쉬움)"},
+    {"key": "P6", "type": "policy", "screens": ["SCR-202"], "title": "이전 날짜 미종료 세션이 여러 개일 때", "provisional": "가장 오래된 하나만 배너", "blocking": false, "rationale": "표시 규칙(되돌리기 쉬움, UXD-076 알려진 공백)"},
+    {"key": "P7", "type": "policy", "screens": ["SCR-202"], "title": "같은 4명·같은 팀을 피할 수 없을 때 서버 처리", "provisional": "Mock은 그대로 둠 — 서버 거부·오류 처리 미정", "blocking": true, "rationale": "서버 API의 거부·오류 계약(외부 계약)이 정해지지 않음 → 서버·통합 구현 전에 결정 필요"},
+    {"key": "P8", "type": "policy", "screens": ["SCR-202"], "title": "AC-034(2초) 근거 ASM-018 미확인", "provisional": "Mock 즉시 생성", "blocking": false, "rationale": "성능 기준 가정 — 서버 검증 전 결정 필요하지만 Mock UI 구현은 막지 않음", "acs": ["AC-034"]},
+    {"key": "Q1", "type": "policy", "screens": ["SCR-224"], "title": "팀전 알고리즘 배정안 대상", "provisional": "현재 참가자 전원 지그재그 재배정(1회)", "blocking": false, "rationale": "알고리즘 범위(되돌리기 쉬움)"},
+    {"key": "Q2", "type": "policy", "screens": ["SCR-223"], "title": "청백전 대진 생성 비용 순서", "provisional": "경기 수 차이 ≤1 > 같은 4명 금지 > 파트너 반복 > 성별 > 밸런스", "blocking": false, "rationale": "알고리즘 순서(되돌리기 쉬움)"},
+    {"key": "Q3", "type": "policy", "screens": ["SCR-224"], "title": "확정 후 팀 변경", "provisional": "팀 선택·참가 해제 잠금, 중도 귀가는 대체 선수로", "blocking": false, "rationale": "명세(같은 팀 안 교체만) 범위 안의 보수적 처리"},
+    {"key": "Q4", "type": "policy", "screens": ["SCR-226"], "title": "대체 선수 추천 기준", "provisional": "경기 수 적은 사람·이름순", "blocking": false, "rationale": "추천 정렬(되돌리기 쉬움)"},
+    {"key": "Q5", "type": "deviation", "category": "①", "screens": ["SCR-225"], "title": "교체 후 경기 수 차이 2 이상 허용(경고만)", "provisional": "확인 창 후 운영진이 허용 가능", "blocking": true, "rationale": "명세 C-14 '경기 수 차이 최대 1'과 다른 행동(① 정보·행동 편차) → UX Spec·기획 결정 필요"},
+    {"key": "Q6", "type": "policy", "screens": ["SCR-225"], "title": "SCR-225 '경기 중' 표시", "provisional": "표시하지 않음", "blocking": false, "rationale": "표시 문구(④·⑤)"},
+    {"key": "Q7", "type": "policy", "screens": ["SCR-223"], "title": "청백전 종료 조건(강제 종료 필요 여부)", "provisional": "미기록 경기가 있으면 종료 비활성", "blocking": false, "rationale": "운영 규칙(되돌리기 쉬움, 데이터 손실 없음)"}
+  ]
+}

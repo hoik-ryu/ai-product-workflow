@@ -26,6 +26,16 @@ BOILERPLATE_SRC=<보일러플레이트 Git URL> tests/harness/product_init/run_k
 - 판정기 검증: 이전 실행의 전체 로그로 K1–K8·K10을 확인했습니다. K9 판정 줄(엔진 `check`의 `user_modified`)은 이번에 새로 넣어 실제 실행 로그로는 아직 확인하지 못했습니다.
 - **이 하네스는 보존 후 아직 실행하지 않았습니다**(2026-11-10 기준 Docker 꺼짐). 실행 전에는 검증되었다고 보지 않습니다.
 
+## `/product-build` P1–P5 (`product_build/`)
+
+```bash
+tests/harness/product_build/run_regression.sh [작업 폴더]   # 약 10–15분
+```
+
+- 필요: `claude`(로그인), `git`, `python3`. Docker·네트워크 의존 없음(픽스처는 Python 코드와 unittest).
+- 의원 진료 예약 픽스처(프리뷰 승인 L3, 계획 제출 상태)에서 계획 승인 → 배치 실행 → AC 검증(M2.3, pb-json 리포트) → 위험 배치 정지 → 중단·재개 → 차단 정책·decide(P6–P7)를 실제 대화로 확인합니다. 시나리오는 `tests/build-scenarios.md`.
+- 판정(`summarize.py`)은 상태·잠금·작업 기록·Git·단위 테스트로만 합니다. 허용 명령에 `git commit`은 없습니다.
+
 ## 빠른 테스트(스크립트 단위)
 
 ```bash
@@ -35,4 +45,9 @@ python3 tests/product_design_v2_test.py       # WF-D05(v1 명령 29개 비교 �
 python3 tests/product_design_dd_test.py       # WF-D02
 python3 tests/product_design_theme_test.py    # WF-D03·D04 (PD_FULL=1이면 프리뷰 빌드·승인 포함)
 python3 tests/product_init_test.py            # /product-init 스크립트
+python3 tests/product_build_test.py           # /product-build 계획(M2.1)
+python3 tests/product_build_exec_test.py      # /product-build 배치 실행(M2.2)
+python3 tests/product_build_verify_test.py    # /product-build AC 기반 자동 검증(M2.3)
+python3 tests/product_build_approval_test.py  # /product-build 증거 정책·최종 승인·영향 분석(M2.4)
+python3 tests/product_build_ledger_test.py    # /product-build 정책·편차 원장·decide·문서 반영(M2.4b)
 ```

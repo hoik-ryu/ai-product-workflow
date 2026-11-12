@@ -1,0 +1,43 @@
+{
+  "plan_format": 1,
+  "scope": { "priorities": ["Must"], "include": [] },
+  "order_strategy": "vertical",
+  "batches": [
+    {
+      "id": "B0",
+      "title": "공통 기반",
+      "goal": "여러 배치가 쓰는 셸·공통 컴포넌트",
+      "kind": "foundation",
+      "screens": [],
+      "acs": [],
+      "components": { "reuse": [], "new": ["CMP-001"] },
+      "depends_on": [],
+      "tasks": [
+        { "id": "B0-T1", "layer": "fe", "title": "공통 버튼·레이아웃", "refs": ["CMP-001"] }
+      ],
+      "risk_tags": [],
+      "done_criteria": ["프로필 검증 명령 통과"],
+      "test_plan": []
+    },
+    {
+      "id": "B1",
+      "title": "로그인",
+      "goal": "로그인과 실패 안내",
+      "kind": "ui",
+      "screens": ["SCR-001"],
+      "stories": ["US-001"],
+      "acs": ["AC-001", "AC-002"],
+      "components": { "reuse": ["CMP-001"], "new": [] },
+      "depends_on": ["B0"],
+      "tasks": [
+        { "id": "B1-T1", "layer": "api", "title": "로그인 API 계약", "refs": ["AC-001"] },
+        { "id": "B1-T2", "layer": "fe", "title": "로그인 화면", "refs": ["SCR-001"], "depends_on": ["B1-T1", "B0-T1"] },
+        { "id": "B1-T3", "layer": "test", "title": "AC 테스트([AC-001] 형식 태그)", "refs": ["AC-001", "AC-002"], "depends_on": ["B1-T2"] }
+      ],
+      "risk_tags": ["security"],
+      "done_criteria": ["프로필 검증 명령 통과", "배치 AC 증거 수준 충족"],
+      "test_plan": [ { "ac": "AC-001", "kind": "integration" }, { "ac": "AC-002", "kind": "integration" } ]
+    }
+  ],
+  "deferred": []
+}

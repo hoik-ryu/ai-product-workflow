@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """/product-design 워크플로 v2 상태·마이그레이션·무효화(WF-D05) 테스트(자체 완결형).
 
-- v1 불변: 같은 v1 명령 순서를 커밋된 엔진(HEAD)과 현재 엔진으로 각각 실행해 출력·최종 상태를 비교합니다
-  (시각·커밋 해시·임시 경로만 정규화).
+- v1 불변: 같은 v1 명령 순서를 고정된 v1 엔진(engine_baseline.V1_ENGINE, scripts 디렉터리 전체)과 현재 엔진으로 각각 실행해
+  출력·최종 상태를 비교합니다(시각·커밋 해시·임시 경로만 정규화). HEAD는 커밋마다 움직이므로 기준으로 쓰지 않습니다.
 - 디자인 승인은 스크립트 명령으로만 기록합니다. state.yaml·기획 문서는 테스트 픽스처입니다.
 - design.json을 손으로 고치는 경우는 '손상·조작 상태를 엔진이 거부하는지' 확인할 때뿐입니다(V5·V7).
 - 프리뷰 승인이 필요한 항목은 pnpm 빌드가 가능할 때만 실행합니다.
@@ -24,6 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import product_design_test as T  # noqa: E402
 import product_design_impact_test as IT  # noqa: E402
+import engine_baseline  # noqa: E402  (고정 기준 엔진: scripts 디렉터리 전체)
 
 ENGINE = HERE.parent
 results: list[tuple[str, bool, str]] = []
@@ -109,20 +110,17 @@ def v1_sequence(d: Path, script) -> list:
 def main() -> int:
     root = Path(tempfile.mkdtemp(prefix="product-design-v2-test-"))
 
-    # ---------------------------------------------------------------- v1 불변(커밋된 엔진과 비교)
-    hs = root / "head_skill"; (hs / "scripts").mkdir(parents=True)
-    (hs / "templates").symlink_to(ENGINE / "skills/product-design/templates")  # 커밋된 엔진도 같은 템플릿을 쓰도록
-    head = hs / "scripts/product_design.py"
-    head.write_text(subprocess.run(["git", "-C", str(ENGINE), "show", "HEAD:skills/product-design/scripts/product_design.py"],
-                                   capture_output=True, text=True, check=True).stdout)
+    # ---------------------------------------------------------------- v1 불변(고정된 v1 엔진과 비교)
+    # 기준 엔진도 같은 템플릿을 쓰도록 현재 templates를 링크합니다(비교 대상은 스크립트 동작).
+    head = engine_baseline.extract_skill(engine_baseline.V1_ENGINE, root / "head_skill")
     da, db = T.make_product(root, "v1_head"), T.make_product(root, "v1_new")
     oa, ob = v1_sequence(da, head), v1_sequence(db, T.SCRIPT)
     paths = [str(da), str(db)]
     diffs = [i for i, (x, y) in enumerate(zip(oa, ob)) if norm(x, paths) != norm(y, paths)]
-    check(f"V0 v1 명령 {len(oa)}개의 종료 코드·출력이 커밋된 엔진과 같음", not diffs and len(oa) == len(ob),
+    check(f"V0 v1 명령 {len(oa)}개의 종료 코드·출력이 v1 엔진({engine_baseline.V1_ENGINE[:7]})과 같음", not diffs and len(oa) == len(ob),
           [(i, norm(oa[i], paths), norm(ob[i], paths)) for i in diffs[:2]])
     sa, sb = norm(json.loads(raw(da)), paths), norm(json.loads(raw(db)), paths)
-    check("V0a v1 최종 design.json(승인·해시·revision·무효화·history)이 커밋된 엔진과 같음", sa == sb,
+    check("V0a v1 최종 design.json(승인·해시·revision·무효화·history)이 v1 엔진과 같음", sa == sb,
           [k for k in sa if sa.get(k) != sb.get(k)])
     check("V0b v1 상태에는 config·design_direction·theme이 생기지 않음", "config" not in sb and "design_direction" not in sb["stages"] and "theme" not in sb)
 

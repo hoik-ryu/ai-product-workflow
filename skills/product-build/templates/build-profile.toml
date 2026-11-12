@@ -1,0 +1,74 @@
+# /product-build 프로젝트 프로필 — 사람이 편집하는 설정입니다. 계획 승인 때 이 파일의 해시도 함께 기록됩니다.
+# 값을 바꾸면 승인된 계획과 달라지므로 계획을 다시 제출·승인해야 합니다(reopen plan → submit plan).
+
+[project]
+# 구현 순서 전략(강제 아님, 계획 초안과 보고에 쓰임): vertical | mock-first | api-first | backend-first | custom
+order_strategy = "vertical"
+
+[scope]
+# 기본 구현 범위. Should/Could는 계획의 scope.include로 US를 골라 더합니다.
+priorities = ["Must"]
+
+[paths]
+# 탐지 결과에서 채웠습니다. 실제 구조에 맞게 고치세요.
+source = {source}
+tests = {tests}
+components = {components}
+exclude = ["node_modules", "dist", "build", ".venv", "venv", "__pycache__", ".git", "coverage"]
+
+[batching]
+max_screens = 6   # 배치당 화면 상한(초과하면 경고)
+max_acs = 25      # 배치당 AC 상한(초과하면 경고)
+min_screens = 2   # 초안 골격에서 이보다 작은 화면 묶음은 가까운 묶음과 합침
+
+[approval]
+# 배치 승인 기본값. auto: 검증을 통과하면 다음 배치로 자동 진행 / user: 배치마다 사용자 승인
+default = "auto"
+# preview waiver로 구현하는 화면 배치의 승인 방식. waiver 자체가 사용자의 명시적 결정이므로 기본은 auto입니다.
+# 시각 확인은 배치 검증(M2.3 브라우저 검사·스크린샷)에 기록됩니다. 배치마다 사람이 보고 승인하려면 user로 바꾸세요.
+waived_ui = "auto"
+# 이 태그가 붙거나 감지된 배치는 항상 사용자 승인(자동으로 낮출 수 없음)
+user_required_tags = ["security", "permission", "data_loss", "schema_migration", "external_contract", "privacy", "spec_change"]
+
+# 위험 감지 키워드(AC 제목·본문에서 찾음). 기본값을 덮어쓰려면 아래 표를 풀어서 고치세요.
+# [approval.risk_keywords]
+# permission = ["권한", "역할", "관리자", "permission", "role", "admin"]
+# security = ["인증", "로그인", "로그아웃", "비밀번호", "보안", "auth", "login", "logout", "password", "security"]
+# data_loss = ["삭제", "탈퇴", "초기화", "되돌릴 수 없", "delete", "remove", "purge"]
+# privacy = ["개인정보", "연락처", "privacy"]
+# external_contract = ["결제", "환불", "웹훅", "payment", "webhook"]
+
+[evidence]
+# 배치 완료에 필요한 AC 증거 수준(E1 언급 / E2 연결·실행 / E3 검증 / EM 수동). E1은 검증으로 세지 않습니다.
+must = "E2"
+should = "E1"
+risk = "E3"   # 보안·권한·데이터 손실 등 위험 태그가 감지된 AC(강화 검증)
+
+# ---------------------------------------------------------------- 검증 명령(M2.3에서 실행)
+# Docker를 가정하지 않습니다. 환경이 필요한 단계는 requires에 적고(예: ["docker"], ["db"], ["remote-db"]),
+# 그 환경이 없으면 그 단계는 not_run으로 표시됩니다(통과로 세지 않음).
+# stage: lint | typecheck | test | build | db | e2e | browser | other
+# 테스트 리포트(M2.3): report = { format = "pb-json" | "junit-xml", file = "<이름>" }  → 명령이 $PB_REPORT_DIR/<이름>에 쓰게 합니다(권장)
+#                     또는 report = { format = "junit-xml", path = "frontend/junit.xml" }(고정 경로: 실행 전후 해시·시각으로 새 파일인지 확인)
+#   예) run = "pnpm --dir frontend exec vitest run --reporter=junit --outputFile=$PB_REPORT_DIR/fe.xml", report = { format = "junit-xml", file = "fe.xml" }
+# optional = true인 단계는 실패·미실행이어도 배치 검증을 막지 않습니다(브라우저 검사 등).
+{steps}
+
+[verify]
+# AC 태그 형식. bracket: 테스트 이름의 [AC-001] / prefix: 이름 머리의 "AC-001 / AC-002:"(SCR·US·FR ID 섞임 허용). 그 밖의 언급은 E1(검증 아님)
+tag_style = "bracket"
+
+[execution]
+# 배치 실행(M2.2). 같은 검증 단계가 연속으로 실패하면 이 횟수에서 멈춥니다(1–5, 무한 재시도 없음).
+max_retries = 3
+# 잠금 갱신이 이 시간(분) 넘게 없으면 '오래된 잠금'으로 보고, resume --take-over로 넘겨받을 수 있습니다(자동 삭제 없음).
+lock_ttl_minutes = 30
+# 선행 배치가 어디까지 끝나야 다음 배치를 시작할지: implemented(구현 완료, 검증 전) | verified(필수 AC 검증 완료) | approved
+# 기본은 verified입니다(M2.3). 선행 배치가 없는 독립 배치는 이 조건과 관계없이 시작할 수 있습니다.
+dependency_min = "verified"
+step_timeout_seconds = 900
+
+[browser]
+# 선택 기능(Playwright를 프로젝트 개발 의존성으로 설치할 때만). 기본 꺼짐.
+enabled = false
+viewports = []   # 예: [{ name = "m390", width = 390, height = 844 }, { name = "pc1440", width = 1440, height = 900 }]

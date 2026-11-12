@@ -22,6 +22,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import product_design_test as T  # noqa: E402  (픽스처 헬퍼 재사용)
+import engine_baseline  # noqa: E402  (고정 기준 엔진: scripts 디렉터리 전체)
 
 ENGINE = HERE.parent
 CASES = HERE / "fixtures/design-change-cases.json"
@@ -167,10 +168,8 @@ def main() -> int:
     before = snapshot(d)
     git_before = T.G(d, "status", "--porcelain")
 
-    # ---- 기존 impact 호환: --design 없이 출력이 커밋된(이전) 엔진과 같음
-    old_script = root / "product_design_head.py"
-    old_script.write_text(subprocess.run(["git", "-C", str(ENGINE), "show", "HEAD:skills/product-design/scripts/product_design.py"],
-                                         capture_output=True, text=True, check=True).stdout)
+    # ---- 기존 impact 호환: --design 없이 출력이 이전 엔진(WF-D01 이전 v1 엔진, 고정 커밋)과 같음
+    old_script = engine_baseline.extract_skill(engine_baseline.V1_ENGINE, root / "baseline_skill")
     def run_script(script, *args):
         p = subprocess.run([sys.executable, "-I", str(script), *args], capture_output=True, text=True,
                            env={"PATH": os.environ["PATH"], "HOME": os.environ.get("HOME", "")})

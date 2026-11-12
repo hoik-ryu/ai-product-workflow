@@ -106,9 +106,57 @@
 ```
 /product-start ── planning approved ──┬──▶ /product-design (design.json: approved)
                                       └──▶ /product-init   (boilerplate.json: verified)
-/product-build ◀── planning approved + 해시 일치 + boilerplate.json verified
-                   + design.json approved(기준 planning 해시 = 현재 승인 해시)          ※ /product-build는 아직 없음
+/product-build ◀── planning approved + 해시 일치(필수)
+                   + design.json: 화면 배치는 ux_spec(+게이트 시 DD) 승인, 프리뷰는 승인 또는 preview waiver
+                   (boilerplate.json은 검증 명령 후보로만 읽음. 실행 진입 조건 여부는 M2.2에서 결정)
 ```
+
+## `/product-build`: 구현 계획·승인·배치 구현·AC 검증 (M2.1–M2.3)
+
+```
+[ai-product-workflow]                          [제품 저장소]
+ skills/product-build/                          .ai-workflow/state.yaml        읽기 전용(planning 게이트)
+   SKILL.md      절차·승인·개입 최소화 규칙          .ai-workflow/design.json       읽기 전용(product_design.py status로 판정)
+   reference/    상태·계획·adopt                    .ai-workflow/boilerplate.json  읽기 전용(검증 명령 후보)
+   scripts/product_build.py + pb_*.py ──쓰기──▶   .ai-workflow/build.json        /product-build 소유
+     (pd_core의 읽기 전용 파서 재사용)               docs/build/                    계획·프로필(소유)
+```
+
+- **역할 분리**: Claude가 계획 초안(배치·작업·의존성·위험 태그)을 쓰고, 스크립트가 구조·참조·중복·누락·순환·디자인 준비·승인 정책을 검증하고 문서를 생성합니다.
+- **입력 기준선**: 계획 승인 때 planning 승인 해시, 디자인 단계 승인 기록 요약, 디자인 문서 해시를 기록합니다. 바뀌면 `outdated`가 되고 실행 진입(`execute-gate`)이 막힙니다. 프리뷰가 새로 승인되는 것(L2 → L3)은 무효화가 아닙니다.
+- **디자인 준비 수준**
+  - L0/L1: 화면 없는 배치만
+  - L2: 화면 배치는 preview waiver 필요
+  - L3: 모두
+- **preview waiver**: 프리뷰 승인만 대신하는 공식 예외입니다. 사유·범위·사용자 승인 문장을 `build.json`에만 기록하고, `design.json`은 바꾸지 않습니다. 기록 시점의 UX Spec·DD revision이 바뀌면 무효가 됩니다.
+- **사용자 개입 최소화**: 계획 승인 1회가 기본입니다. 배치 승인은 위험 태그(보안·권한·데이터 손실·스키마 변경·외부 계약·개인정보·명세 변경)가 감지되거나 지정된 배치만 사용자에게 받고, 나머지는 자동 진행입니다(M2.2). 위험 배치는 자동으로 낮출 수 없습니다.
+- **보호 경로**: 쓰기 함수가 소유 경로(`build.json`, `.ai-workflow/build/`, `docs/build/`) 밖을 거부합니다. `guard`는 구현 변경 중 보호 경로(다른 Skill의 상태·승인 문서·프리뷰)를 찾습니다.
+- **adopt**: 기존 코드의 라우트·ID 언급으로 후보만 만듭니다(verified=false, AC는 E0/E1까지). 승인·검증 이력은 만들지 않습니다.
+- **배치 실행(M2.2)**: Claude가 코드를 쓰고 스크립트(`pb_exec.py`)가 판정합니다.
+  - 저장소당 활성 배치 하나: 잠금 `lock.json`, O_EXCL 생성
+  - 시작 기준선: HEAD와 미커밋 파일 해시
+  - 작업별 체크포인트(digest·직전본)
+  - 변경 분류: 보호 경로 차단 / 시작 때 미커밋 파일 충돌 차단 / 범위 밖 보고 / 기존 테스트 삭제·약화 확인
+  - 재시도 한도(연속 실패 `max_retries`)
+- **AC 검증(M2.3, `pb_verify.py`)**
+  - `verify`가 프로필 검증 단계를 직접 실행합니다. 그 실행 중에 만든 리포트(pb-test-report/v1 JSON, JUnit XML)만 증거로 씁니다. 실행 전후 코드 트리 해시가 같아야 하고, 실행 원본 digest를 남깁니다.
+  - AC 매핑은 구조화된 태그만 인정합니다. E2는 태그된 테스트 통과, E3는 실패→수정→통과 기록입니다.
+  - 검증 뒤 배치 범위 변경·회귀·증거 유실은 `stale`(재검증 필요)입니다.
+  - 선행 배치 조건 기본값은 `verified`입니다.
+  - 검증 기록 없이 `verified`인 상태 파일은 `invalid_state`입니다.
+- **증거 정책·승인(M2.4a)**
+  - E3는 실제 결함 수정(`fix`)과 회귀 수정(`regression_fix`)만 인정합니다. 결함 주입(`fault_injection`)과 테스트 변경(`test_changed`)은 별도 유형입니다.
+  - 기존 구현 등록(`imported`)은 E2부터입니다.
+  - 목표 변경·결함 주입 인정은 사용자 승인으로만 하고, 원래 목표는 보존합니다.
+  - 최종 사용자 승인(`approved`, `approvals[]`)은 자동 검증과 별개입니다. 무효화되면 `valid: false`만 덧붙입니다.
+  - 영향 분석(`impact`)은 배치 범위·의존성 파일(디렉터리 기준)·전이 선행 배치를 기준으로 합니다.
+- **정책·편차 원장(M2.4b)**
+  - `.ai-workflow/build/ledger.json`(state.yaml·build.json과 분리)에 4유형을 둡니다: policy·deviation·evidence_gap·target_change.
+  - 원문은 digest로 고정하고, 결정·변경은 덧붙입니다.
+  - 차단 항목(policy·deviation만 가능)은 영향 배치(지정 배치·관련 AC)의 시작·재개·최종 승인을 막습니다. 실행 중 배치는 체크포인트에서 멈춥니다.
+  - `decide`는 사용자 원문과 확인이 있을 때만 기록합니다. 결정되면 영향 배치는 재검증합니다.
+  - 문서 반영: 제안 → 승인 → 소유 Skill 재승인 → 적용 확인. 계획 재승인 때 배치 기록을 보존합니다.
+- **재개**: 잠금을 자동으로 지우지 않습니다. 넘겨받기·외부 변경 수용·실패 재시도·체크포인트 복구는 사용자 확인 문장이 있어야 합니다. 선행 배치 조건은 `execution.dependency_min`(기본 verified)입니다.
 
 ## 확장 지점(Milestone 2 이후)
 

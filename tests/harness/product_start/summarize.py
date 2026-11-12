@@ -8,7 +8,8 @@ import sys
 
 log = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 blocks = {}
-for m in re.finditer(r"^### (\S+)\n(.*?)(?=^### |^===== |\Z)", log, re.M | re.S):
+# 시나리오 블록은 하네스가 쓰는 '### s01' 형식만 인정합니다(모델 응답 안의 마크다운 제목 '### 백업' 등은 블록이 아님)
+for m in re.finditer(r"^### (s\d+[a-z]?)\n(.*?)(?=^### s\d+[a-z]?\n|^===== |\Z)", log, re.M | re.S):
     blocks[m.group(1)] = m.group(2)
 phase_f = log.split("===== PHASE F", 1)[1] if "===== PHASE F" in log else ""
 
@@ -62,7 +63,7 @@ checks = {
     "S18": ok_common("s18") and st("s18", "planning") == ("approved", "2") and list(hashes("s18").values()).count("MATCH") == 5,
     "S19": "ALLOWLIST OK | SENTINELS OK" in phase_f and re.search(r"discovery: status=in_progress rev=0", phase_f) is not None,
 }
-common_ok = all("SENTINELS OK" in b for b in blocks.values())
+common_ok = bool(blocks) and all("SENTINELS OK" in b for b in blocks.values()) and "SENTINELS CHANGED" not in log
 for k, v in checks.items():
     print(("PASS " if v else "FAIL ") + k)
 passed = sum(checks.values())
