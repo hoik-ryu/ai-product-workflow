@@ -23,7 +23,7 @@ disable-model-invocation: true
 
 이번 실행의 사용자 입력: `$ARGUMENTS`
 
-> **현재 범위(M2)**: 계획 생성·검증·승인, 배치 실행, AC 기반 자동 검증, E3 증거 유형 구분, 기존 구현 등록, 목표 변경 승인, 최종 사용자 승인, 영향 분석, 정책·편차 원장·decide·문서 반영 대기열. **M3.1·M3.2**: UI 대응표(CMP ↔ 코드 부품)·토큰 대응 검사·UI Brief(엔진)·UI Plan(Claude) 검증. **M3.3·M3.4**: 화면 상태 증거(필수 상태 E2)·수동 증거(EM)·브라우저 검증 리포트(`pb-ui-report/v1`) 판정. 계획 승인 / 구현 완료(`implemented`·`imported`) / AC 검증(`verified`, 자동) / 최종 사용자 승인(`approved`)을 구분해 말합니다.
+> **현재 범위(M2)**: 계획 생성·검증·승인, 배치 실행, AC 기반 자동 검증, E3 증거 유형 구분, 기존 구현 등록, 목표 변경 승인, 최종 사용자 승인, 영향 분석, 정책·편차 원장·decide·문서 반영 대기열. **M3.1·M3.2**: UI 대응표(CMP ↔ 코드 부품)·토큰 대응 검사·UI Brief(엔진)·UI Plan(Claude) 검증. **M3.3·M3.4**: 화면 상태 증거(필수 상태 E2)·수동 증거(EM)·브라우저 검증 리포트(`pb-ui-report/v1`) 판정. **M3.5**: UI 배치 필수 조건, `browser_pending`, UI 검토 묶음·수정 요청(①–⑤)·사용자 직접 UI 승인. 계획 승인 / 구현 완료(`implemented`·`imported`) / AC 검증(`verified`, 자동) / 최종 사용자 승인(`approved`)을 구분해 말합니다.
 
 ## 반드시 지킬 규칙
 
@@ -105,7 +105,7 @@ disable-model-invocation: true
    - `branch_recommendation`이 있으면 한 줄로 알립니다(브랜치를 만들지 않음).
 3. 작업을 `next_task` 순서대로 구현합니다.
    - 계획의 화면·AC·컴포넌트와 승인된 UX Spec(02 화면 상태·문구·권한)을 따릅니다. `scan`의 기존 컴포넌트를 먼저 재사용합니다.
-   - **화면·컴포넌트 배치**(`reference/ui.md` §4): 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지).
+   - **화면·컴포넌트 배치**(`reference/ui.md` §4): `[ui]` 프로젝트의 `kind = "ui"` 배치는 아래가 없으면 `batch-start`가 거부합니다(`ui_plan_required`). 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지).
    - 계획의 신규 부품을 만들면 `ui-map register --source built --batch Bxx`로 등록합니다. 배치 제출 전에 `ui-map check --batch Bxx`, `token-check`, `token-audit --batch Bxx`를 실행해 결과를 보고합니다. 토큰 예외·감사 예외는 사유와 사용자 문장이 있어야 등록·변경·삭제합니다(`ui-map except`·`unexcept`). 예외가 바뀌면 그 기준으로 검증된 UI 배치는 다시 검사합니다.
    - **화면 상태 테스트는 상태 태그를 붙입니다**(`reference/ui.md` §5: `[SCR-001-ST2] …`). Must 화면의 정의된 상태는 E2가 필요합니다. 자동화하지 못한 확인(키보드·스크린리더 등)은 사용자가 직접 확인한 문장을 받아 `evidence-manual add`로 기록합니다(EM은 E2를 대신하지 않음). 브라우저 단계는 프로필의 `pb-ui` 단계로 실행합니다(§6). 도구 설치는 사용자 확인 후.
    - 명세에 없는 정책은 임의로 확정하지 않습니다(`reference/ledger.md`).
@@ -119,7 +119,8 @@ disable-model-invocation: true
 5. 모든 작업이 끝나면 `batch-submit --batch Bxx --lock <id>`.
    - `test_changes_need_confirmation`: 바뀐 테스트와 이유를 보여 주고 확인을 받은 뒤 `--confirm-test-changes --note`.
    - 성공하면 배치는 `implemented`입니다.
-6. `verify --batch Bxx`(최종 검증, 모든 단계). 결과를 AC별로 보고합니다(통과·부족·실패·미실행·테스트 없음과 사유). UI 흐름 배치는 `ui` 결과(상태별 증거·브라우저 차단·미실행·토큰)와 `final_approval_blockers`도 보고합니다(`ui-evidence --batch`).
+6. `verify --batch Bxx`(최종 검증, 모든 단계). 결과를 AC별로 보고합니다(통과·부족·실패·미실행·테스트 없음과 사유). UI 흐름 배치는 `ui` 결과(상태별 증거·브라우저 차단·미실행·토큰)와 `final_approval_blockers`도 보고합니다(`ui-evidence --batch`). 필수 브라우저 단계가 실행되지 않았으면 `browser_pending`으로 분명히 말합니다(verify는 끝나도 UI 승인은 막힘).
+   - **UI 배치 최종 승인**(`reference/ui.md` §7): `ui-review --batch Bxx`의 묶음을 사용자에게 보여 주고, 사용자가 화면을 직접 확인한 뒤 `approve batch --batch Bxx --review <review_id> --by <승인 주체> --note '<승인 문장>'`. 수정 요청은 `ui-feedback add`(사용자 원문)로 기록하고 경로(`code_fix`·`design_change`·`needs_decision`)를 따릅니다. 디자인 변경은 코드로 바꾸지 않고 `/product-design` 절차로 안내합니다.
    - `verified`: 다음으로 갑니다.
    - `verify_failed`: 원인이 코드·테스트면 `resume --batch Bxx`로 다시 열어 고치고 → `batch-submit` → `verify`. 기존 테스트를 약하게 만들어 통과시키지 않습니다. 환경이 없어 `not_run`이면 그대로 보고하고 멈춥니다.
    - 같은 배치가 연속 한도만큼 실패하면 `failed`입니다. 보고하고 멈춥니다.
@@ -170,4 +171,4 @@ disable-model-invocation: true
 - `ac-report [--batch <ID>]`: AC별 검증 상태·수준·목표·사유·증거 유형과 승인 이력을 봅니다(읽기 전용).
 - `impact`: 코드·의존성 변경으로 다시 검증할 배치와 차단되는 후속 배치를 봅니다. 영향 없는 배치는 다시 검증하지 않습니다.
 - `adopt-register --batch <ID> --note`: 엔진 밖에서 이미 구현된 배치를 사용자 확인 후 `imported`로 등록하고 E2부터 검증합니다.
-- `ui-map show|check [--batch]|candidates|register|remove|tokens|except|unexcept`, `token-check`, `token-audit [--batch]`, `ui-brief --batch [--full]`, `ui-plan-validate --batch`, `evidence-manual add|list|revoke`, `ui-evidence --batch`: `reference/ui.md`.
+- `ui-map show|check [--batch]|candidates|register|remove|tokens|except|unexcept`, `token-check`, `token-audit [--batch]`, `ui-brief --batch [--full]`, `ui-plan-validate --batch`, `evidence-manual add|list|revoke`, `ui-evidence --batch`, `ui-review --batch`, `ui-feedback add|list|decide|resolve`, `approve batch --review --by`(UI 배치): `reference/ui.md`.

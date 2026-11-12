@@ -191,7 +191,7 @@ def unit_checks(root: Path) -> None:
     run_req = json.loads(json.dumps(run_nr))
     run_req["steps"][1]["optional"] = False
     bs2 = UV.browser_summary(run_req, steps_req, brief, [])
-    check("U13 필수 단계 미실행: final_approval_blockers에 남김", bs2["status"] == "not_run" and bs2["final_approval_blockers"], bs2)
+    check("U13 필수 단계 미실행: browser_pending(M3.5 정책), final_approval_blockers에 남김", bs2["status"] == "browser_pending" and bs2["final_approval_blockers"], bs2)
     bs3 = UV.browser_summary(run_nr, steps[:1], brief, [])
     check("U14 브라우저 단계가 프로필에 없으면 not_configured(경고)", bs3["status"] == "not_configured" and bs3["warnings"], bs3)
     run_dn = {"run_id": "R", "at": "t", "valid": True, "steps": [{"name": "browser", "status": "passed", "optional": False, "ui_report": {"results": [
@@ -312,8 +312,8 @@ def flow(root: Path) -> None:
     scenario(d, "not_run", reason="Playwright가 설치되지 않음")
     code, out = verify(d)
     ui = out.get("ui") or {}
-    check("V5 필수 브라우저 not_run: 단계 not_run, ui.browser not_run, final_approval_blockers 기록",
-          code == 2 and out["run"]["steps"]["browser"]["status"] == "not_run" and ui["browser"]["status"] == "not_run"
+    check("V5 필수 브라우저 not_run: 단계 not_run, ui.browser browser_pending, final_approval_blockers 기록(필수 상태 미충족이라 verify 실패)",
+          code == 2 and out["run"]["steps"]["browser"]["status"] == "not_run" and ui["browser"]["status"] == "browser_pending"
           and any("not_run" in x for x in ui["browser"]["final_approval_blockers"])
           and any("Playwright" in x for x in ui["final_approval_blockers"]), ui.get("browser"))
     check("V6 EM만 있는 필수 상태는 manual_only(E2 대신 안 됨)", ui["states"]["SCR-002-ST3"]["status"] == "manual_only"

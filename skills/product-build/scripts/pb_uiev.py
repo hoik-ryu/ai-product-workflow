@@ -203,6 +203,8 @@ def browser_summary(run: dict, prof_steps: list[dict], brief: dict, viewports: l
         warnings.append("프로필에 브라우저 검증 단계(report.format = \"pb-ui\")가 없습니다")
     elif blocking:
         status = "failed"
+    elif any(v["status"] == "not_run" and v["required"] for v in steps.values()):
+        status = "browser_pending"  # 필수 브라우저 검증 미실행: verify는 끝낼 수 있지만 최종 UI 승인은 차단
     elif any(v["status"] == "not_run" for v in steps.values()):
         status = "not_run"
     else:
@@ -302,11 +304,13 @@ def screen_basis(project: Path, sid: str, uplan: dict | None, umap: dict | None)
 
 
 def tokens_basis(project: Path, umap: dict | None) -> str:
-    """토큰 기준: 승인된 토큰(04 또는 v2 테마) + 토큰 출력 설정 + 허용 예외(토큰·직접 값). 예외 추가·변경·삭제 시 바뀜."""
+    """토큰 기준: 승인된 토큰(04 또는 v2 테마) + 토큰 출력 설정·출력 파일 내용 + 허용 예외(토큰·직접 값). 예외 추가·변경·삭제 시 바뀜."""
     from pb_ui import approved_tokens  # 지역 import
     approved, src = approved_tokens(project)
     ex = (umap or {}).get("exceptions") or {}
+    out_file = ((umap or {}).get("tokens") or {}).get("file")
     return digest({"approved": approved, "source": src, "output": (umap or {}).get("tokens"),
+                   "output_sha": sha_file(project / out_file) if out_file and not Path(out_file).is_absolute() and ".." not in Path(out_file).parts else None,
                    "token_exceptions": ex.get("tokens") or [], "audit_exceptions": ex.get("audit") or []})
 
 
@@ -360,3 +364,11 @@ def em_status(project: Path, m: dict, scope_tree: str, basis_now: dict) -> tuple
 def em_file_record(project: Path, rel: str) -> dict:
     return {"path": rel, "sha256": sha_file(project / rel), "kind": "screenshot" if rel.lower().endswith(SHOT_EXT) else "file"}
 
+
+
+def evidence_digest(ui: dict) -> str:
+    """UI 증거 요약 digest(승인 기록과 비교): 상태별 판정·브라우저 판정·토큰 결과·코드 버전(실행 ID는 제외: 같은 코드·같은 결과면 같음)."""
+    return digest({"states": {k: (v.get("status"), v.get("level")) for k, v in (ui.get("states") or {}).items()},
+                   "browser": {k: (ui.get("browser") or {}).get(k) for k in ("status", "blocking")},
+                   "tokens": {k: (v or {}).get("ok") for k, v in (ui.get("tokens") or {}).items()},
+                   "code": (ui.get("code") or {}).get("code_tree")})

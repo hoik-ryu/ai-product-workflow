@@ -34,6 +34,7 @@ from pb_adopt import analyze  # noqa: E402
 import pb_ledger as L  # noqa: E402
 import pb_ui as U  # noqa: E402
 import pb_uiev as UV  # noqa: E402
+import pb_uireview as UR  # noqa: E402
 from pb_exec import (  # noqa: E402
     DEP_LEVELS, EVIDENCE_REL, LOCK_REL, acquire_lock, changed_vs, classify, diff_states, ensure_gitignore, head_sha, heartbeat,
     in_patterns, load_checkpoint, lock_age_minutes, next_task, read_lock, release_lock, require_lock, save_base_tests, states_now, task_order,
@@ -113,7 +114,7 @@ def next_action(st: dict | None, project: Path) -> str:
             return f"검증이 필요한 배치가 있습니다: {', '.join(unv)} → verify --batch <ID>(실패하면 resume --batch로 고친 뒤 다시 검증)."
         nxt = [k for k, b in st["batches"].items() if b["status"] == "planned"]
         if not nxt:
-            pend = [k for k, b in st["batches"].items() if b["status"] == "verified" and b.get("approval") == "user"]
+            pend = [k for k, b in st["batches"].items() if b["status"] == "verified" and (b.get("approval") == "user" or (b.get("verification") or {}).get("ui"))]
             return ("모든 배치가 검증되었습니다. 사용자 최종 승인이 필요한 배치: " + ", ".join(pend) + " → approve batch --batch <ID> --note") if pend \
                 else "모든 배치가 검증되었습니다(최종 승인은 approve batch로 선택적으로 기록)."
         return f"다음 배치를 batch-start로 시작합니다(후보: {', '.join(nxt[:3])}). 선행 배치 조건은 execute-gate로 확인합니다."
@@ -650,6 +651,10 @@ def cmd_batch_start(a) -> None:
     allow, shared = _scope_of(pb_)
     if not allow:
         block("batch_paths_missing", f"{a.batch}에 수정 가능 경로(paths.allow)가 없습니다. reopen plan으로 계획에 추가하고 다시 승인받으세요.")
+    if UR.ui_required(prof, pb_):
+        probs = _ui_plan_problems(project, st, prof, a.batch)
+        if probs:
+            block("ui_plan_required", f"{a.batch}는 UI 배치입니다. 구현 전에 UI Brief와 검증된 UI Plan이 필요합니다(reference/ui.md §4).", problems=probs)
     if b.get("approval") == "user" and not (a.confirm_risk and (a.note or "").strip()):
         block("risk_confirmation_required", f"{a.batch}는 사용자 확인이 필요한 배치입니다. 시작 전에 범위와 위험을 설명하고 명시적 확인을 받으세요.",
               reasons=b.get("approval_reasons"), hint="확인을 받으면 batch-start --confirm-risk --note '<사용자 확인 문장>'")
@@ -881,6 +886,9 @@ def cmd_resume(a) -> None:
     cands = [k for k, x in st["batches"].items() if x["status"] in ("in_progress", "paused", "failed")]
     if a.batch and not cands and st["batches"].get(a.batch, {}).get("status") in ("verify_failed", "stale"):
         cands = [a.batch]  # 검증 실패·재검증 필요 배치를 고치러 다시 엶(배치를 지정할 때만)
+    if a.batch and not cands and st["batches"].get(a.batch, {}).get("status") in ("verified", "approved") and any(
+            f["route"] == "code_fix" and f["status"] == "open" for f in st["batches"][a.batch].get("ui_feedback") or []):
+        cands = [a.batch]  # M3.5: UI 검토의 코드 수정 요청(code_fix)을 반영하러 다시 엶
     if a.batch:
         cands = [k for k in cands if k == a.batch]
     if not cands:
@@ -1136,8 +1144,22 @@ def cmd_approve_batch(a, project: Path, st: dict) -> None:
     if up:
         block("upstream_not_verified", "선행 배치의 검증이 유효하지 않아 승인할 수 없습니다.", upstream=up)
     v = b["verification"]
+    ui_rec = None
+    if v.get("ui") or UR.ui_required(prof, pbs.get(a.batch)):  # M3.5: UI 배치는 사용자 직접 승인 + 현재 검토 묶음
+        rv = _ui_review_now(project, st, prof, a.batch)
+        if not (a.by or "").strip():
+            block("approver_required", "UI 최종 승인에는 승인 주체(--by)가 필요합니다.")
+        if rv["blockers"]:
+            block("ui_approval_blocked", "UI 최종 승인을 막는 항목이 있습니다.", blockers=rv["blockers"], review_id=rv["review_id"])
+        if a.review != rv["review_id"]:
+            block("review_mismatch", "사용자가 본 검토 묶음이 현재 상태와 다릅니다(또는 --review 없음). ui-review로 지금 묶음을 다시 보여 주고 승인받으세요.",
+                  current_review=rv["review_id"], given=a.review)
+        ui_rec = {"review_id": rv["review_id"], "by": a.by.strip(), "evidence_digest": v["ui"].get("evidence_digest"),
+                  "code": v["ui"].get("code"), "scope_tree": v["scope_tree"], "brief_digest": v["ui"].get("brief_digest"),
+                  "ui_plan_sha": v["ui"].get("ui_plan_sha"), "tokens_basis": (v["ui"].get("basis") or {}).get("tokens")}
     b.setdefault("approvals", []).append({"at": now(), "statement": a.note.strip(), "run_id": v["run_id"], "scope_tree": v["scope_tree"],
-                                         "targets": effective_targets(b), "valid": True})
+                                         "targets": effective_targets(b), "valid": True,
+                                         **({"by": a.by.strip()} if (a.by or "").strip() else {}), **({"ui": ui_rec} if ui_rec else {})})
     b["status"] = "approved"
     add_history(st, "batch", "approved", None, f"{a.batch}: {a.note.strip()[:200]}")
     save_state(project, st)
@@ -1279,11 +1301,20 @@ def cmd_verify(a) -> None:
     legacy = ((b.get("run") or {}).get("submitted") or {}).get("kind") == "adopt"
     ev = evaluate(acs, effective_targets(b), run, hist, mentioned, run["tree_after"], set(b.get("fi_accepted", {})), legacy, project)
     ok, reasons = batch_verdict(run, ev)
-    ui = _ui_evaluate(project, st, prof, a.batch, b, run, ev) if _ui_active(project, a.batch) else None
+    # M3.5 정책: UI 흐름 배치에서만, 필수 브라우저 단계(pb-ui)가 not_run이면 그 사유로는 verify를 실패시키지 않고 browser_pending으로 남깁니다
+    # (최종 UI 승인 차단). 비UI 배치의 필수 브라우저 단계 미실행은 M2 규칙대로 verify 실패, 선택 단계 미실행은 기록만.
+    ui_on = _ui_active(project, a.batch, prof, plan_batch)
+    ui_steps = {s["name"] for s in prof["verify"]["steps"] if UV.is_ui_step(s)}
+    pending = [s["name"] for s in run["steps"] if s["name"] in ui_steps and s["status"] == "not_run" and not s.get("optional")] if ui_on else []
+    if pending:
+        reasons = [r for r in reasons if not any(r.startswith(f"검증 단계 {n}: not_run") for n in pending)]
+        ok = not reasons
+    ui = _ui_evaluate(project, st, prof, a.batch, b, run, ev) if ui_on else None
     if ui:  # M3.3·M3.4: 필수 상태 E2·브라우저 차단 항목·토큰 검사·UI Plan 검증
         reasons += ui["reasons"]
         ok = not reasons
     summary = {"run_id": run["run_id"], "dir": run["dir"], "digest": run["digest"], "at": run["at"], "valid": run["valid"],
+               **({"browser_pending": pending} if pending else {}),
                "steps": step_summary(run), "counts": {k: sum(1 for e in ev.values() if e["status"] == k) for k in
                                                      ("verified", "insufficient", "failing", "not_run", "untested", "invalid_run")}}
     # 다른 검증된 배치의 태그 테스트가 이번 실행에서 실패하면 회귀로 표시
@@ -1304,6 +1335,9 @@ def cmd_verify(a) -> None:
            "acs": ev, "counts": summary["counts"], "regressed_batches": regressed}
     if ui:
         out["ui"] = _ui_compact(ui)
+    if pending:
+        out["browser"] = "browser_pending"
+        out["browser_pending"] = {"steps": pending, "note": "필수 브라우저 검증이 실행되지 않았습니다. 다른 검증이 통과하면 verify는 끝나지만 최종 UI 승인은 막힙니다."}
     limit = prof["execution"]["max_retries"]
     att = b["run"]["attempts"].setdefault("verify", {"consecutive_failures": 0, "total": 0, "last": None})
     att["total"] += 1
@@ -1335,8 +1369,11 @@ def cmd_verify(a) -> None:
                                        "targets": effective_targets(b)}
         if ui:
             b["verification"]["ui"] = ui
-        if ok and prev_status == "approved" and prev_scope == b["verification"]["scope_tree"]:
-            b["status"] = "approved"  # 같은 코드로 다시 검증: 최종 승인 유지
+        prev_ui = next((x.get("ui") for x in reversed(b.get("approvals") or []) if x.get("valid")), None)
+        same_ui = not ui or (prev_ui is not None and prev_ui.get("evidence_digest") == ui.get("evidence_digest")
+                             and not (ui.get("browser") or {}).get("status") == "browser_pending")
+        if ok and prev_status == "approved" and prev_scope == b["verification"]["scope_tree"] and same_ui:
+            b["status"] = "approved"  # 같은 코드·같은 UI 증거로 다시 검증: 최종 승인 유지
         elif ok:
             if prev_status == "approved":
                 _invalidate_approval(b, "재검증 결과 기준이 바뀜(다시 승인 필요)")
@@ -1865,10 +1902,33 @@ def cmd_ui_plan_validate(a) -> None:
 
 
 # ---------------------------------------------------------------- M3.3·M3.4: 화면 상태 증거·수동 증거·브라우저 검증
-def _ui_active(project: Path, bid: str) -> bool:
-    """이 배치가 M3 UI 흐름(UI Brief 생성)을 쓰는지. 쓰지 않는 배치는 M2 판정 그대로입니다."""
+def _ui_active(project: Path, bid: str, prof: dict | None = None, plan_batch: dict | None = None) -> bool:
+    """이 배치가 M3 UI 흐름을 쓰는지: UI Brief가 있거나, [ui] 프로젝트의 kind=ui 배치(M3.5: 필수). 그 밖은 M2 판정 그대로입니다."""
     d = U.read_json(project, U.ui_rel(bid, "brief.json"))
-    return bool(d) and not d.get("_invalid")
+    return (bool(d) and not d.get("_invalid")) or (prof is not None and UR.ui_required(prof, plan_batch))
+
+
+def _ui_plan_problems(project: Path, st: dict, prof: dict, bid: str) -> list[str]:
+    """UI 배치 시작 조건: 현재 입력 기준 UI Brief와, 그 Brief로 검증(ui-plan-validate 통과)된 UI Plan."""
+    try:
+        _st, _prof, uprof, plan, dinfo = _ui_batch(project, bid)
+        umap = U.load_map(project)
+    except Blocked as e:
+        return [f"[ui_inputs] {e.payload.get('message')}"]
+    now_brief = U.build_brief(project, st, plan, bid, prof, uprof, dinfo, load_model(project), umap)
+    stored = U.read_json(project, U.ui_rel(bid, "brief.json"))
+    val = U.read_json(project, U.ui_rel(bid, "validation.json")) or {}
+    probs = []
+    if not stored or stored.get("_invalid"):
+        probs.append(f"[ui_brief_missing] UI Brief가 없습니다(ui-brief --batch {bid})")
+    elif stored.get("digest") != now_brief["digest"]:
+        probs.append(f"[brief_stale] UI Brief가 현재 입력과 다릅니다(ui-brief --batch {bid})")
+    plan_sha = sha_file(project / U.ui_rel(bid, "plan.json"))
+    if plan_sha is None:
+        probs.append(f"[ui_plan_missing] UI Plan이 없습니다({U.ui_rel(bid, 'plan.json')})")
+    elif not (val.get("ok") and val.get("brief_digest") == now_brief["digest"] and val.get("plan_sha256") == plan_sha):
+        probs.append(f"[ui_plan_not_validated] UI Plan이 현재 Brief 기준으로 검증되지 않았습니다(ui-plan-validate --batch {bid})")
+    return probs
 
 
 def _ui_inputs(project: Path, bid: str):
@@ -1910,7 +1970,9 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
     val = U.read_json(project, U.ui_rel(bid, "validation.json")) or {}
     plan_sha = sha_file(project / U.ui_rel(bid, "plan.json"))
     validated = bool(uplan and val.get("ok") and val.get("brief_digest") == now_brief["digest"] and val.get("plan_sha256") == plan_sha)
-    if stored.get("digest") != now_brief["digest"]:
+    if not stored:
+        R.append(f"[ui_brief_missing] UI 배치에는 UI Brief가 필요합니다(ui-brief --batch {bid})")
+    elif stored.get("digest") != now_brief["digest"]:
         R.append("[brief_stale] UI Brief가 현재 승인 문서·계획·대응표와 다릅니다(ui-brief → UI Plan 확인 → ui-plan-validate)")
     if not uplan:
         R.append(f"[ui_plan_missing] UI Plan({U.ui_rel(bid, 'plan.json')})이 없거나 JSON이 아닙니다")
@@ -1961,6 +2023,7 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
                counts={k: sum(1 for r in states.values() if r["status"] == k) for k in
                        ("verified", "insufficient", "failing", "not_run", "untested", "manual_only", "invalid_run")},
                final_approval_blockers=blockers)
+    res["evidence_digest"] = UV.evidence_digest(res)
     return res
 
 
@@ -2089,6 +2152,130 @@ def cmd_ui_evidence(a) -> None:
     emit(out)
 
 
+# ---------------------------------------------------------------- M3.5: UI 검토·수정 요청·승인
+def _ui_review_now(project: Path, st: dict, prof: dict, bid: str) -> dict:
+    b = st["batches"][bid]
+    pbs = _plan_batches(project)
+    umap = U.load_map(project)
+    token_now = None
+    if umap and umap.get("tokens"):
+        try:
+            tc = U.token_check(project, umap)
+            token_now = {k: tc.get(k) for k in ("ok", "counts", "missing", "mismatch", "excepted")}
+        except Blocked as e:
+            token_now = {"ok": False, "error": e.payload.get("error"), "message": e.payload.get("message")}
+    fresh = freshness(project, prof, bid, b, pbs.get(bid)) if b["status"] in DONE_STATES else None
+    return UR.build_review(bid, b, pbs.get(bid) or {}, fresh, token_now, _em_now(project, prof, bid, b), umap)
+
+
+def cmd_ui_review(a) -> None:
+    """UI 배치의 사용자 검토 묶음: 화면별 상태 증거·브라우저 결과·AC·토큰·컴포넌트 대응·수동 증거·수정 요청·승인 차단 항목."""
+    project = project_of(a)
+    st = require_state(project)
+    prof = profile_or_block(project)
+    b = st["batches"].get(a.batch or "")
+    if not b:
+        block("unknown_batch", f"{a.batch}가 없습니다.")
+    rv = _ui_review_now(project, st, prof, a.batch)
+    U.write_json(project, U.ui_rel(a.batch, "review.json"), {**rv, "at": now()})
+    ap = next((x for x in reversed(b.get("approvals") or []) if x.get("ui")), None)
+    emit({"ok": True, **rv, "record": U.ui_rel(a.batch, "review.json"),
+          "approval": ({k: ap.get(k) for k in ("at", "by", "statement", "valid", "invalidations")} | {"review_id": ap["ui"]["review_id"]}) if ap else None,
+          "next": (f"사용자에게 이 묶음을 보여 주고 직접 확인을 받습니다. 승인: approve batch --batch {a.batch} --review {rv['review_id']} --by <승인자> --note '<승인 문장>'"
+                   f" / 수정 요청: ui-feedback add --batch {a.batch} --summary ... --fact '<JSON>' --note '<사용자 원문>'")
+                  if rv["ready"] else "승인 차단 항목(blockers)을 먼저 해결합니다. 검토는 계속할 수 있고, 수정 요청은 ui-feedback add로 기록합니다."})
+
+
+def cmd_ui_feedback(a) -> None:
+    """UI 수정 요청 기록·분류(①–⑤)·결정·해결. 분류는 /product-design impact --design(읽기 전용)을 그대로 씁니다."""
+    project = project_of(a)
+    st = require_state(project)
+    prof = profile_or_block(project)
+    if a.action == "list":
+        out = {k: x.get("ui_feedback") for k, x in st["batches"].items() if x.get("ui_feedback") and (not a.batch or k == a.batch)}
+        emit({"ok": True, "feedback": out})
+    b = st["batches"].get(a.batch or "")
+    if not b:
+        block("unknown_batch", "배치(--batch)가 없습니다.")
+    note = (a.note or "").strip()
+    fbs = b.setdefault("ui_feedback", [])
+    if a.action == "add":
+        if not note:
+            block("approval_statement_required", "수정 요청은 사용자 원문(--note)이 필요합니다.")
+        if not (a.summary or "").strip():
+            block("invalid_arguments", "--summary(요청 요약)가 필요합니다.")
+        if b["status"] not in ("verified", "approved", "verify_failed", "stale", "implemented", "imported"):
+            block("not_reviewable", f"{a.batch} 상태가 {b['status']}입니다. 구현 제출 이후 화면을 검토할 때 기록합니다.")
+        try:
+            facts = [json.loads(x) for x in a.fact or []]
+        except json.JSONDecodeError as e:
+            block("invalid_arguments", f"--fact는 JSON 객체입니다: {e}")
+        if not facts or not all(isinstance(f, dict) for f in facts):
+            block("invalid_arguments", "--fact(변경 사실, design-change-request/v1의 facts 항목)가 하나 이상 필요합니다. 결함이면 {\"kind\": \"defect\"}.")
+        fid = f"FB-{1 + max([int(f['id'].split('-')[1]) for x in st['batches'].values() for f in x.get('ui_feedback') or []] or [0]):03d}"
+        item = UR.classify(project, fid, a.summary.strip(), facts)
+        route, why = UR.route_of(item)
+        rec = {"id": fid, "batch": a.batch, "summary": a.summary.strip(), "targets": {"screens": a.screen or [], "states": a.state or []},
+               "facts": facts, "classification": {k: item.get(k) for k in ("status", "categories", "primary", "flags", "reapproval_required",
+                                                                          "reapproval_stages", "notes", "impact")},
+               "category": ", ".join(c["no"] for c in item.get("categories") or []) or ("결함" if item["status"] == "excluded" else "미확정"),
+               "route": route, "route_reason": why, "status": "needs_decision" if route == "needs_decision" else "open",
+               "statement": note, "by": (a.by or "").strip(), "at": now(), "review_id": a.review,
+               "code": {"scope_tree": (b.get("verification") or {}).get("scope_tree"), "head": head_sha(project)},
+               "design_revisions": UR.design_revisions(project)}
+        fbs.append(rec)
+        if b["status"] == "approved":  # 승인 뒤 수정 요청: 승인은 무효 표시(기록은 남김), 배치는 검증 상태로
+            _invalidate_approval(b, f"수정 요청 {fid}")
+            b["status"] = "verified"
+        add_history(st, "batch", "ui_feedback", None, f"{a.batch}: {fid} {route} — {a.summary.strip()[:120]}")
+        save_state(project, st)
+        emit({"ok": True, "feedback": {k: rec[k] for k in ("id", "category", "route", "route_reason", "status")},
+              "classification": rec["classification"], "status": b["status"], "next": UR.next_for(route, a.batch, item),
+              "note": "분류 결과로 디자인·기획 승인 상태를 바꾸지 않았습니다." + (" 코드 수정만 필요하므로 기획·디자인 승인은 그대로입니다." if route == "code_fix" else "")})
+    rec = next((f for f in fbs if f["id"] == a.id), None)
+    if not rec:
+        block("unknown_feedback", f"{a.batch}에 {a.id} 수정 요청이 없습니다.")
+    if a.action == "decide":
+        if rec["status"] != "needs_decision":
+            block("not_needs_decision", f"{a.id}는 분류가 확정된 요청입니다({rec['route']}). 확정된 디자인 변경을 코드 수정으로 바꿀 수 없습니다.")
+        if a.route not in ("code_fix", "design_change") or not note:
+            block("approval_statement_required", "--route code_fix|design_change와 사용자 결정 문장(--note)이 필요합니다.")
+        rec.update(route=a.route, status="open", decision={"route": a.route, "statement": note, "at": now()})
+        add_history(st, "batch", "ui_feedback_decided", None, f"{a.batch}: {a.id} → {a.route}")
+        save_state(project, st)
+        emit({"ok": True, "id": a.id, "route": a.route, "next": UR.next_for(a.route, a.batch, rec["classification"])})
+    if a.action == "resolve":
+        if rec["status"] not in UR.FB_OPEN:
+            emit({"ok": True, "status": "already_" + rec["status"], "id": a.id})
+        if not note:
+            block("approval_statement_required", "해결·철회는 사용자 확인 문장(--note)이 필요합니다.")
+        v = b.get("verification") or {}
+        if a.withdraw:
+            rec.update(status="withdrawn", resolution={"kind": "withdrawn", "statement": note, "reason": (a.reason or "").strip(), "at": now()})
+        elif rec["status"] == "needs_decision":
+            block("needs_decision", f"{a.id}는 경로가 정해지지 않았습니다(ui-feedback decide).")
+        elif rec["route"] == "code_fix":
+            fresh = freshness(project, prof, a.batch, b, _plan_batches(project).get(a.batch))
+            if b["status"] not in DONE_STATES or fresh or not v.get("at") or v["at"] < rec["at"]:
+                block("not_reverified", f"수정 후 다시 검증(verify)되어야 해결할 수 있습니다(현재 {b['status']}" + (f", {fresh}" if fresh else "") + ").")
+            if v.get("scope_tree") == rec["code"]["scope_tree"]:
+                block("code_unchanged", "요청 이후 배치 코드가 바뀌지 않았습니다. 코드 수정 없이 해결로 기록하지 않습니다(철회는 --withdraw).")
+            rec.update(status="resolved", resolution={"kind": "code_fixed", "statement": note, "at": now(), "run_id": v.get("run_id"),
+                                                      "scope_tree": v.get("scope_tree")})
+        else:
+            cur = UR.design_revisions(project)
+            stages = rec["classification"].get("reapproval_stages") or []
+            changed = [s for s in stages if cur.get(s) != rec["design_revisions"].get(s)]
+            if not changed:
+                block("design_not_reapproved", "디자인 변경 요청은 소유 Skill에서 재승인된 뒤 해결합니다(재승인된 단계 없음). 요청을 거두려면 --withdraw.",
+                      stages=stages)
+            rec.update(status="resolved", resolution={"kind": "design_reapproved", "stages": changed, "statement": note, "at": now()})
+        add_history(st, "batch", "ui_feedback_resolved", None, f"{a.batch}: {a.id} {rec['status']}")
+        save_state(project, st)
+        emit({"ok": True, "id": a.id, "status": rec["status"], "resolution": rec["resolution"], "next": f"ui-review --batch {a.batch}"})
+    block("invalid_arguments", f"알 수 없는 동작: {a.action}")
+
+
 # ---------------------------------------------------------------- 진입점
 class JsonArgParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -2113,7 +2300,7 @@ def main() -> None:
     add("plan-validate", cmd_plan_validate)
     s = add("submit", cmd_submit); s.add_argument("target", choices=("plan",))
     s = add("approve", cmd_approve); s.add_argument("target", choices=("plan", "batch")); s.add_argument("--revision", type=int); s.add_argument("--batch")
-    s.add_argument("--note", default="")
+    s.add_argument("--note", default=""); s.add_argument("--review"); s.add_argument("--by", default="")
     s = add("reopen", cmd_reopen); s.add_argument("target", choices=("plan",)); s.add_argument("--reason", required=True)
     s = add("waiver", cmd_waiver); s.add_argument("action", choices=("add", "revoke")); s.add_argument("--kind", default="preview")
     s.add_argument("--reason", default=""); s.add_argument("--batches", default=""); s.add_argument("--all-ui", action="store_true")
@@ -2166,6 +2353,11 @@ def main() -> None:
     s.add_argument("--method", default="other"); s.add_argument("--result", default=""); s.add_argument("--file", action="append")
     s.add_argument("--by", default=""); s.add_argument("--note", default=""); s.add_argument("--id"); s.add_argument("--reason", default="")
     s = add("ui-evidence", cmd_ui_evidence); s.add_argument("--batch", required=True)
+    s = add("ui-review", cmd_ui_review); s.add_argument("--batch", required=True)
+    s = add("ui-feedback", cmd_ui_feedback); s.add_argument("action", choices=("add", "list", "decide", "resolve")); s.add_argument("--batch")
+    s.add_argument("--summary", default=""); s.add_argument("--fact", action="append"); s.add_argument("--screen", action="append")
+    s.add_argument("--state", action="append"); s.add_argument("--note", default=""); s.add_argument("--by", default=""); s.add_argument("--review")
+    s.add_argument("--id"); s.add_argument("--route"); s.add_argument("--withdraw", action="store_true"); s.add_argument("--reason", default="")
     a = ap.parse_args()
     try:
         a.fn(a)

@@ -1,6 +1,6 @@
 # M3 Design-to-Code 설계 (초안, 2026-11-12)
 
-상태: §8 정책 확정(2026-11-12). **M3.1·M3.2 구현 완료**(커밋 353292d) — §9(설계 차이 2건 사용자 승인). **M3.3·M3.4 구현(미커밋)** — §9.3. M3.5 이후와 PoC 실행은 아직 하지 않았습니다.
+상태: §8 정책 확정(2026-11-12). **M3.1·M3.2 구현 완료**(커밋 353292d) — §9(설계 차이 2건 사용자 승인). **M3.3·M3.4 구현 완료**(커밋 9e938ee) — §9.3. **M3.5 구현(미커밋)** — §9.4. M3.6 PoC 실행과 Figma(M3.7)는 아직 하지 않았습니다.
 
 목표: 자연어 요구사항 → 기획 → UX/디자인 명세 → **실제 제품 UI(컴포넌트·페이지) 구현** → 테스트 → 사용자 승인까지 이어지는 범용 워크플로.
 M3가 새로 메우는 구간은 "승인된 디자인 산출물 → 제품 코드(UI)"와 "UI 구현 결과의 검증·사용자 검토"입니다. 나머지는 M1·M2 기능을 그대로 씁니다.
@@ -309,7 +309,7 @@ M3가 새로 메우는 구간은 "승인된 디자인 산출물 → 제품 코�
 - 테스트: `tests/product_build_ui_test.py`(독립 픽스처: 기존 프로젝트 A / 신규·v2 테마·DD 프로젝트 B).
 - 사용자 승인(2026-11-12): 위 차이 중 ① 토큰 출력·허용 예외를 `ui-map.json`에서 관리, ② UI Brief를 계획 승인 직후부터 생성 — 두 가지를 승인. 조건: 토큰 예외가 추가·변경·삭제되면 관련 검증 결과를 무효화하고 다시 검사하며, 예외 사유와 사용자 확인 기록을 유지합니다(M3.3·M3.4 작업에서 적용).
 
-### 9.3 M3.3·M3.4 구현 기록(미커밋)
+### 9.3 M3.3·M3.4 구현 기록
 - 모듈 `skills/product-build/scripts/pb_uiev.py`, 명령 `evidence-manual add|list|revoke`·`ui-evidence`·`ui-map unexcept`, verify 확장, 문서 `reference/ui.md` §5–§6, 어댑터 예시 `templates/ui-adapters/react-vite-playwright/`.
 - 적용 범위: **UI Brief를 만든 배치만** 상태 증거·브라우저 판정·토큰 검사를 verify 판정에 넣습니다. 만들지 않은 배치는 M2 판정 그대로(M2 프로젝트 동작 불변).
 - 상태 태그는 AC 태그와 같은 규칙(`[SCR-001-ST2]`, pb-json `states`, JUnit property `state`). 기존 AC 판정 함수는 바꾸지 않았고, 브라우저 결과는 실행 케이스로 바뀌어 기존 AC 판정에 그대로 들어갑니다.
@@ -319,3 +319,20 @@ M3가 새로 메우는 구간은 "승인된 디자인 산출물 → 제품 코�
 - 토큰: UI 흐름 배치의 verify가 `token-check`(불일치·누락 차단)·`token-audit`(프로필 mode)를 실행해 기록. 토큰 기준(승인 토큰·출력 설정·예외)이 바뀌면 그 배치는 stale. 예외 추가·변경·삭제는 `exceptions.log`에 이전 기록과 함께 보존(9.2 승인 조건).
 - 무효화 단위: 화면별 입력 기준(02 블록·연결 AC 행·관련 VD·화면 CMP·UI Plan의 그 화면). 승인 문서 자체 변경은 기존 M2 규칙(계획 outdated)이 먼저 적용됩니다.
 - 테스트: `tests/product_build_uiev_test.py`(브라우저·Node 없이, 리포트 대역 사용).
+
+### 9.4 M3.5 정책 확정과 구현 기록(미커밋)
+정책(사용자 결정, 2026-11-12):
+1. 필수 브라우저 단계 `not_run` → 다른 검증이 정상이면 verify는 완료, `browser_pending` 표시, 최종 UI 승인 차단. 브라우저 실패·잘못된 리포트·필수 상태 E2 미충족은 verify 실패.
+2. EM은 Must 화면 필수 상태의 E2를 대체하지 않음(별도 수동 검토 근거).
+3. 승인된 계획의 UI 배치는 UI Brief·UI Plan 필수. 비UI 배치·기존 M2 프로젝트는 차단하지 않음.
+4. 토큰 불일치는 verify 실패 유지, 승인된 예외 허용, 예외 변경 시 재검증.
+
+구현:
+- 모듈 `pb_uireview.py`, 명령 `ui-review`·`ui-feedback add|list|decide|resolve`, `approve batch --review --by`(UI 배치), `reference/ui.md` §7.
+- UI 배치 판별: 프로필에 `[ui]`가 있는 프로젝트의 `kind = "ui"` 배치(정책 3의 'M2 프로젝트'는 `[ui]`가 없는 프로필로 구분). batch-start에서 Brief·검증된 UI Plan 요구.
+- `browser_pending`: **UI 흐름 배치에서만** pb-ui 필수 단계 not_run 사유를 verify 판정에서 빼고, `verification.browser_pending`·`ui.browser.status`에 기록. 비UI 배치의 필수 브라우저 단계 미실행은 M2 규칙대로 verify 실패, 선택 단계 미실행은 기록만(사용자 확정 2026-11-12).
+- 확정(2026-11-12): `[ui]`+`kind: ui` 배치의 Brief·Plan 강제 유지, stale EM은 UI 승인 차단 유지, 공통 토큰 파일 변경 시 영향 UI 승인 재검사.
+- 수정 요청 분류는 `/product-design impact --design`을 읽기 전용으로 호출(요청 파일은 프로젝트 밖 임시 폴더). 경로: code_fix(결함·⑤·재승인 불필요 ④) / design_change(①②③·재승인 필요 ④) / needs_decision.
+- 승인 기록에 검토 묶음 ID·승인 주체·코드 버전·UI 증거 digest·Brief digest·UI Plan 해시·토큰 기준 연결. 토큰 기준에 토큰 출력 파일 내용 해시를 더해, 다른 배치 범위의 토큰 파일 변경도 UI 승인 재검사 대상.
+- 같은 코드·같은 UI 증거 재검증은 승인 유지(M2 규칙 확장), UI 증거가 달라지면 재승인.
+- 테스트: `tests/product_build_uireview_test.py`.

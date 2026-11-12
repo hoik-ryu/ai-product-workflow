@@ -150,6 +150,50 @@ report = { format = "pb-ui", file = "ui.json" }   # 실행별 폴더($PB_REPORT_
 
 `ui-evidence --batch Bxx`(읽기 전용): 상태별 증거·AC 연결·브라우저 판정·토큰 결과·EM 상태와, 지금 기준으로 영향받은 화면·상태.
 
-## 7. 아직 하지 않는 것(M3.5 이후)
+## 7. UI 검토·수정 요청·최종 승인(M3.5)
 
-UI 검토·수정 요청 루프(`ui-review`·피드백), UI 배치 사용자 승인 기본값과 `final_approval_blockers`로 최종 승인 차단, PoC 실행(M3.6), Figma 입력·시각 비교(M3.7).
+### UI 배치의 필수 조건
+- **UI 배치** = 프로필에 `[ui]`가 있는 프로젝트에서 계획상 `kind = "ui"`인 배치. foundation·non_ui 배치와 `[ui]`가 없는 M2 프로젝트는 그대로입니다.
+- UI 배치는 `batch-start` 전에 현재 입력 기준 UI Brief와 검증된 UI Plan이 있어야 합니다(`ui_plan_required`). verify도 UI 흐름으로 판정합니다.
+
+### 브라우저 미실행(`browser_pending`)
+- UI 배치에서 필수 브라우저 단계(`pb-ui`, optional 아님)가 `not_run`이면 그 사유만으로는 verify를 실패시키지 않습니다. 비UI 배치에서는 필수 단계 미실행이 verify 실패(M2 규칙)이고, 선택 단계 미실행만 기록합니다. 다른 검증이 모두 통과하면 `verified` + `browser: "browser_pending"`입니다.
+- 브라우저 실패·잘못된 리포트·시간 초과·필수 상태 E2 미충족·토큰 불일치는 그대로 verify 실패입니다.
+- `browser_pending`인 UI 배치는 최종 UI 승인이 막힙니다. 브라우저를 실행해(`verify --available browser`) 통과하면 풀립니다.
+
+### 검토 묶음(`ui-review --batch Bxx`)
+화면별 상태 증거(출처: test·browser·EM)·브라우저 결과(뷰포트·차단·경고·스크린샷)·연결 AC 판정·토큰 검사(검증 때와 지금)·컴포넌트 대응·수동 증거 상태·수정 요청과 **승인 차단 항목**을 한 묶음으로 보여 주고 `.ai-workflow/build/ui/Bxx/review.json`에 남깁니다. 묶음 ID(`review_id`)는 내용 digest입니다.
+
+승인 차단 항목: verified가 아님, 증거 stale(코드·UI Plan·화면 입력·토큰 기준·토큰 출력 파일), `browser_pending`, 필수 상태 E2 미충족, UI Plan 미검증, 지금 기준 토큰 불일치, stale 수동 증거, 해결되지 않은 수정 요청.
+
+### 최종 UI 승인
+```
+approve batch --batch Bxx --review <review_id> --by "<승인 주체>" --note "<사용자 승인 문장>"
+```
+- 사용자가 화면을 직접 검토한 뒤에만 기록합니다(Claude가 대신 승인하지 않음). 차단 항목이 있거나 `review_id`가 지금 묶음과 다르면 거부합니다.
+- 승인 기록: 시각, 승인 주체, 문장, 검토 묶음 ID, 코드 버전(HEAD·코드 트리·배치 범위 해시), UI 증거 digest, UI Brief digest, UI Plan 해시, 토큰 기준.
+- 승인 뒤 범위 코드·UI Plan·화면 입력·토큰(예외·출력 파일)·수동 증거가 바뀌면 `check`가 stale로 기록하고 승인은 무효 표시합니다(기록은 남음). 같은 코드·같은 UI 증거로 재검증하면 승인이 유지되고, 증거가 달라지면(예: browser_pending) 다시 승인받습니다.
+- 비UI 배치의 최종 승인은 M2 그대로입니다.
+
+### 수정 요청(`ui-feedback`)
+```
+ui-feedback add --batch Bxx --summary "<요약>" --fact '<JSON>' [--fact ...] [--screen SCR-001] [--state ...] [--by ...] [--review <id>] --note "<사용자 원문>"
+ui-feedback list [--batch]
+ui-feedback decide --batch Bxx --id FB-001 --route code_fix|design_change --note "<사용자 결정>"     (미확정 분류만)
+ui-feedback resolve --batch Bxx --id FB-001 --note "<확인 문장>"  |  --withdraw --reason "<사유>" --note
+```
+- `--fact`는 `/product-design`의 변경 사실 형식(`reference/change-impact.md` §3)입니다. 승인 명세와 다르게 구현된 것이면 `{"kind": "defect"}`.
+- 분류는 `/product-design impact --design`(읽기 전용)을 그대로 씁니다. 엔진은 디자인·기획 상태를 바꾸지 않습니다.
+
+| 분류 | 경로 | 하는 일 |
+|---|---|---|
+| 결함, ⑤ 구현 메모, 재승인이 필요 없는 ④ | `code_fix` | 이 배치만 `resume --batch` → 수정 → `batch-submit` → `verify` → `ui-review`. 기획·디자인·계획 승인은 그대로 |
+| ①·②·③, 재승인이 필요한 ④ | `design_change` | 코드로 바꾸지 않음. `/product-design impact --design`으로 영향을 보여 주고 사용자 확인 후 `reopen` → 재승인 → 계획 갱신 → 재구현·재검증 |
+| conditional·needs_review | `needs_decision` | 사용자가 `decide`로 경로를 정함(확정된 분류는 바꿀 수 없음) |
+
+- 승인된 배치에 수정 요청이 들어오면 승인은 무효 표시되고 배치는 `verified`로 돌아갑니다. 열린 요청이 있으면 승인할 수 없습니다.
+- 해결 조건: `code_fix`는 요청 뒤 배치 코드가 바뀌고 다시 검증되어야 합니다. `design_change`는 재승인 단계의 승인 revision이 바뀌어야 합니다. 거둘 때는 `--withdraw`(사유·문장). 모든 이력은 남습니다.
+
+## 8. 아직 하지 않는 것(M3.6 이후)
+
+실전 PoC 실행(M3.6), Figma 입력·시각 비교(M3.7).
