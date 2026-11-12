@@ -15,6 +15,7 @@ disable-model-invocation: true
 - `reference/verification.md`: AC 태그·테스트 리포트·증거 수준(E0–E3)·검증 판정·무효화 (**검증 전에 읽기**)
 - `reference/ledger.md`: 정책·편차 원장, 차단 정책, decide, 문서 반영 대기열 (**정책을 만나거나 결정할 때 읽기**)
 - `reference/adopt.md`: 기존 구현 분석과 증거 수준(E0–E3·EM)
+- `reference/ui.md`: UI 대응표·토큰 대응·UI Brief·UI Plan (**화면·공통 컴포넌트 배치를 구현하기 전에 읽기**, M3)
 - `templates/build-profile.toml`: 프로젝트 프로필(init이 탐지 결과로 채움), `templates/implementation-plan.example.json`: 계획 형식 예
 - `scripts/product_build.py`: 모든 판정·상태 기록(JSON 출력, 차단 시 종료 코드 2, 내부 오류 1). 같은 폴더의 `pb_*.py`를 불러옵니다(직접 실행하지 않음)
 
@@ -22,7 +23,7 @@ disable-model-invocation: true
 
 이번 실행의 사용자 입력: `$ARGUMENTS`
 
-> **현재 범위(M2)**: 계획 생성·검증·승인, 배치 실행, AC 기반 자동 검증, E3 증거 유형 구분, 기존 구현 등록, 목표 변경 승인, 최종 사용자 승인, 영향 분석, 정책·편차 원장·decide·문서 반영 대기열. 계획 승인 / 구현 완료(`implemented`·`imported`) / AC 검증(`verified`, 자동) / 최종 사용자 승인(`approved`)을 구분해 말합니다.
+> **현재 범위(M2)**: 계획 생성·검증·승인, 배치 실행, AC 기반 자동 검증, E3 증거 유형 구분, 기존 구현 등록, 목표 변경 승인, 최종 사용자 승인, 영향 분석, 정책·편차 원장·decide·문서 반영 대기열. **M3.1·M3.2**: UI 대응표(CMP ↔ 코드 부품)·토큰 대응 검사·UI Brief(엔진)·UI Plan(Claude) 검증. 계획 승인 / 구현 완료(`implemented`·`imported`) / AC 검증(`verified`, 자동) / 최종 사용자 승인(`approved`)을 구분해 말합니다.
 
 ## 반드시 지킬 규칙
 
@@ -64,6 +65,9 @@ disable-model-invocation: true
 
 1. `init`: `build.json`, `docs/build/build-profile.toml`(탐지한 경로·검증 명령), `.ai-workflow/build/.gitignore`(증거 원본 로그 제외)를 만듭니다. 기존 파일은 덮어쓰지 않습니다.
 2. `scan` 결과(스택, 검증 명령 후보, 컴포넌트, ID 언급 수)를 짧게 보여 주고, 프로필의 경로·검증 명령·`order_strategy`가 맞는지 확인을 받습니다. 사용자가 고치라고 하면 프로필만 고칩니다.
+3. 화면이 있는 프로젝트면 `reference/ui.md` §2를 따릅니다.
+   - 기존 부품이 있으면 `ui-map candidates`의 후보를 보여 주고, 사용자가 확인한 것만 `ui-map register --note`로 등록합니다. 기존 토큰 파일이 있으면 `ui-map tokens --file --note`.
+   - 새 프로젝트면 대응표는 비워 두고, 공통 부품은 계획의 B0 `components.new`로 만듭니다.
 
 ## 2단계 — 계획 작성(Claude) · 검증(스크립트)
 
@@ -101,6 +105,8 @@ disable-model-invocation: true
    - `branch_recommendation`이 있으면 한 줄로 알립니다(브랜치를 만들지 않음).
 3. 작업을 `next_task` 순서대로 구현합니다.
    - 계획의 화면·AC·컴포넌트와 승인된 UX Spec(02 화면 상태·문구·권한)을 따릅니다. `scan`의 기존 컴포넌트를 먼저 재사용합니다.
+   - **화면·컴포넌트 배치**(`reference/ui.md` §4): 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지).
+   - 계획의 신규 부품을 만들면 `ui-map register --source built --batch Bxx`로 등록합니다. 배치 제출 전에 `ui-map check --batch Bxx`, `token-check`, `token-audit --batch Bxx`를 실행해 결과를 보고합니다. 토큰 예외·감사 예외는 사유와 사용자 문장이 있어야 등록합니다(`ui-map except`).
    - 명세에 없는 정책은 임의로 확정하지 않습니다(`reference/ledger.md`).
      - 되돌리기 쉬운 값이면 코드에 `TODO(POL): …` 임시값 표시를 남깁니다. 배치를 마칠 때 `ledger sync`로 원장에 넣습니다(비차단).
      - 보안·권한·개인정보·되돌리기 어려운 데이터·외부 계약이거나, 승인 명세와 다르게 구현해야 하면 `ledger add --type policy|deviation --blocking --rationale`로 등록하고 멈춰 사용자에게 묻습니다.
@@ -163,3 +169,4 @@ disable-model-invocation: true
 - `ac-report [--batch <ID>]`: AC별 검증 상태·수준·목표·사유·증거 유형과 승인 이력을 봅니다(읽기 전용).
 - `impact`: 코드·의존성 변경으로 다시 검증할 배치와 차단되는 후속 배치를 봅니다. 영향 없는 배치는 다시 검증하지 않습니다.
 - `adopt-register --batch <ID> --note`: 엔진 밖에서 이미 구현된 배치를 사용자 확인 후 `imported`로 등록하고 E2부터 검증합니다.
+- `ui-map show|check [--batch]|candidates|register|remove|tokens|except`, `token-check`, `token-audit [--batch]`, `ui-brief --batch [--full]`, `ui-plan-validate --batch`: `reference/ui.md`.

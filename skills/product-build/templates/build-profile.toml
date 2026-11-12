@@ -72,3 +72,12 @@ step_timeout_seconds = 900
 # 선택 기능(Playwright를 프로젝트 개발 의존성으로 설치할 때만). 기본 꺼짐.
 enabled = false
 viewports = []   # 예: [{ name = "m390", width = 390, height = 844 }, { name = "pc1440", width = 1440, height = 900 }]
+
+# [ui]  (M3 Design-to-Code, 선택) — 엔진은 프레임워크·UI 라이브러리를 해석하지 않습니다. 값은 프로젝트 기록·검사 범위입니다.
+# framework = "<자유 텍스트, 기록용>"
+# component_roots = ["frontend/src/components"]   # 비어 있으면 paths.components
+# api_contract = ""                                # 선택: 계약 파일(OpenAPI·타입 등). UI Plan의 contract 문자열을 이 파일에서 찾습니다.
+# [ui.audit]
+# mode = "warn"            # warn | block — 직접 색·길이 값 감사(token-audit)
+# kinds = ["color"]        # color | length
+# extensions = [".css", ".scss", ".ts", ".tsx", ".js", ".jsx", ".vue", ".svelte", ".html"]

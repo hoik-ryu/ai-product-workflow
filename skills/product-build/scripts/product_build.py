@@ -32,6 +32,7 @@ from pb_scan import (  # noqa: E402
 )
 from pb_adopt import analyze  # noqa: E402
 import pb_ledger as L  # noqa: E402
+import pb_ui as U  # noqa: E402
 from pb_exec import (  # noqa: E402
     DEP_LEVELS, EVIDENCE_REL, LOCK_REL, acquire_lock, changed_vs, classify, diff_states, ensure_gitignore, head_sha, heartbeat,
     in_patterns, load_checkpoint, lock_age_minutes, next_task, read_lock, release_lock, require_lock, save_base_tests, states_now, task_order,
@@ -79,7 +80,12 @@ def profile_or_block(project: Path, required: bool = True) -> dict:
 
 def run_validate(project: Path, st: dict | None, plan: dict, profile: dict, dinfo: dict) -> dict:
     model = load_model(project)
-    return validate(plan, model, profile, dinfo, (st or {}).get("waivers", [])) | {"_model": model}
+    v = validate(plan, model, profile, dinfo, (st or {}).get("waivers", [])) | {"_model": model}
+    ui_errs = U.plan_conflicts(U.load_map(project), plan)  # M3.1: 대응표가 있을 때만(없으면 기존 동작 그대로)
+    if ui_errs:
+        v["errors"] = v["errors"] + ui_errs
+        v["ok"] = False
+    return v
 
 
 def waiver_status(st: dict, dinfo: dict) -> list[dict]:
@@ -1584,6 +1590,235 @@ def cmd_doc_proposal(a) -> None:
               "note": "적용 확인. 기획·UX Spec이 바뀌었으면 check가 구현 계획을 outdated로 표시하고, 관련 배치는 재검증·재승인을 거칩니다."})
 
 
+# ---------------------------------------------------------------- M3.1 UI 대응표·토큰 / M3.2 UI Brief·UI Plan
+def _ui_ctx(project: Path, plan_required: bool = False):
+    prof = profile_or_block(project, required=False)
+    uprof, probs = U.ui_profile(prof)
+    if probs:
+        block("profile_invalid", f"{PROFILE_REL}의 [ui]에 문제가 있습니다.", problems=probs)
+    return prof, uprof, read_plan(project, required=plan_required)
+
+
+def cmd_ui_map(a) -> None:
+    project = project_of(a)
+    require_planning(project)
+    st = load_state(project)
+    prof, uprof, plan = _ui_ctx(project)
+    umap = U.load_map(project)
+    if a.action == "candidates":
+        emit({"ok": True, **U.candidates(project, prof, uprof, umap)})
+    if a.action in ("show", "check"):
+        if umap is None:
+            emit({"ok": True, "exists": False, "path": U.UI_MAP_REL,
+                  "note": "대응표가 없습니다. 기존 부품이 있으면 ui-map candidates → 사용자 확인 → ui-map register, 새 프로젝트는 B0 배치가 만든 뒤 register --source built"})
+        r = U.map_problems(project, umap, plan, st, a.batch, U.code_exts(uprof))
+        emit({"ok": r["ok"], "path": U.UI_MAP_REL, **r, **({"map": umap} if a.action == "show" else {})}, 0 if r["ok"] else 2)
+    umap = umap or U.empty_map()
+    cmps04 = U.uisys_cmps(project)
+    note = (a.note or "").strip()
+    if a.action == "register":
+        if not a.cmp or a.cmp not in cmps04:
+            block("unknown_cmp", f"{a.cmp}는 승인된 04 문서의 컴포넌트가 아닙니다.")
+        if a.source not in U.SOURCES:
+            block("invalid_arguments", f"--source는 {'/'.join(U.SOURCES)} 중 하나입니다.")
+        if not a.export:
+            block("invalid_arguments", "--export(코드에서 쓰는 이름)가 필요합니다.")
+        if a.cmp in umap["components"] and not a.replace:
+            block("already_mapped", f"{a.cmp}는 이미 대응되어 있습니다. 바꾸려면 --replace --note(사용자 문장)를 씁니다.", current=umap["components"][a.cmp])
+        if a.replace and not note:
+            block("approval_statement_required", "기존 대응을 바꾸려면 사용자 문장(--note)이 필요합니다.")
+        entry = {"source": a.source, "export": a.export, "registered_at": now()}
+        if a.source == "library":
+            if not a.package:
+                block("invalid_arguments", "library 부품은 --package(라이브러리 이름)가 필요합니다.")
+            entry["package"] = a.package
+            if a.path:
+                entry["path"] = a.path
+        else:
+            if not a.path or U.bad_path(a.path):
+                block("invalid_arguments", "--path(저장소 안 상대 경로)가 필요합니다.")
+            entry["path"] = a.path
+        if a.path and U.is_preview(a.path):
+            block("preview_reuse", "디자인 프리뷰 코드는 제품 부품으로 등록할 수 없습니다(시각 참고만).")
+        if a.path and is_protected(a.path):
+            block("protected_path", f"{a.path}는 다른 Skill의 보호 경로입니다.")
+        if a.path and not (project / a.path).is_file():
+            block("path_missing", f"{a.path}가 없습니다. 부품을 만든 뒤 등록합니다.")
+        if a.path and not U.export_found(project, a.path, a.export):
+            block("export_not_found", f"{a.path}에서 {a.export}를 찾을 수 없습니다.")
+        if a.source in ("existing", "library"):
+            if not note:
+                block("approval_statement_required", "기존·라이브러리 부품 재사용 등록은 사용자 확인 문장(--note)이 필요합니다(scan 후보는 후보일 뿐).")
+        else:
+            if not plan or not (st and st["plan"]["status"] == "approved"):
+                block("plan_not_approved", "built 등록은 승인된 계획의 배치가 만든 부품만 할 수 있습니다.")
+            b = U.batches_by_id(plan).get(a.batch or "")
+            if not b:
+                block("invalid_arguments", "--batch(부품을 만든 배치)가 필요합니다.")
+            if a.cmp not in U.comp_list(b, "new"):
+                block("not_planned_new", f"{a.cmp}는 {b['id']}의 components.new가 아닙니다. 계획에 없는 부품은 등록하지 않습니다.")
+            if st["batches"].get(b["id"], {}).get("status") not in U.STARTED:
+                block("batch_not_started", f"{b['id']}가 시작되지 않았습니다.")
+            pats = ((b.get("paths") or {}).get("allow") or []) + ((b.get("paths") or {}).get("shared") or [])
+            if not U.in_patterns(a.path, pats):
+                block("out_of_scope", f"{a.path}는 {b['id']}의 paths.allow/shared 밖입니다.")
+            entry["built_by"] = b["id"]
+        if note:
+            entry["note"] = note
+        prev = umap["components"].get(a.cmp)
+        umap["components"][a.cmp] = entry
+        U.save_map(project, umap, f"register {a.cmp} ({a.source})" + (" replace" if prev else ""), note)
+        r = U.map_problems(project, umap, plan, st)
+        emit({"ok": True, "cmp": a.cmp, "entry": entry, "replaced": prev, "map_check": {"ok": r["ok"], "errors": r["errors"], "warnings": r["warnings"]}})
+    if a.action == "remove":
+        if a.cmp not in umap["components"]:
+            block("not_mapped", f"{a.cmp}는 대응표에 없습니다.")
+        if not note:
+            block("approval_statement_required", "대응 삭제는 사용자 문장(--note)이 필요합니다.")
+        prev = umap["components"].pop(a.cmp)
+        U.save_map(project, umap, f"remove {a.cmp}", note)
+        emit({"ok": True, "removed": a.cmp, "previous": prev})
+    if a.action == "tokens":
+        fmt = a.format or "css-vars"
+        if fmt not in U.TOKEN_FORMATS:
+            block("invalid_arguments", f"--format은 {'/'.join(U.TOKEN_FORMATS)} 중 하나입니다.")
+        if not note:
+            block("approval_statement_required", "토큰 출력 설정은 사용자 확인 문장(--note)이 필요합니다.")
+        cfg = {"format": fmt}
+        if fmt == "css-vars":
+            if not a.file or U.bad_path(a.file) or U.is_preview(a.file) or is_protected(a.file):
+                block("token_output_invalid", "--file은 제품 코드 안 상대 경로여야 합니다(프리뷰·보호 경로 불가).")
+            cfg.update(file=a.file, var_pattern=a.var_pattern or "--{dashed}")
+            if "{dashed}" not in cfg["var_pattern"] and "{name}" not in cfg["var_pattern"]:
+                block("invalid_arguments", "--var-pattern에는 {dashed} 또는 {name}이 있어야 합니다.")
+        else:
+            if not a.export_cmd:
+                block("invalid_arguments", "--export-cmd(토큰 이름→값 JSON을 출력하는 프로젝트 명령)가 필요합니다.")
+            cfg.update(export=a.export_cmd, file=a.file)
+        aliases = {}
+        for x in a.alias or []:
+            if "=" not in x:
+                block("invalid_arguments", f"--alias는 토큰=이름 형식입니다: {x}")
+            k, v = x.split("=", 1)
+            aliases[k.strip()] = v.strip()
+        approved, _src = U.approved_tokens(project)
+        unknown = sorted(k for k in aliases if k not in approved)
+        if unknown:
+            block("unknown_token", "승인된 토큰이 아닌 이름에 별칭을 걸 수 없습니다.", tokens=unknown)
+        if aliases:
+            cfg["aliases"] = aliases
+        umap["tokens"] = cfg
+        U.save_map(project, umap, f"tokens {fmt}", note)
+        emit({"ok": True, "tokens": cfg})
+    if a.action == "except":
+        if not (a.reason or "").strip() or not note:
+            block("approval_statement_required", "예외는 사유(--reason)와 사용자 승인 문장(--note)이 모두 필요합니다.")
+        if a.token:
+            approved, _src = U.approved_tokens(project)
+            if a.token not in approved:
+                block("unknown_token", f"{a.token}는 승인된 토큰이 아닙니다.")
+            umap["exceptions"]["tokens"] = [e for e in umap["exceptions"]["tokens"] if e["token"] != a.token]
+            umap["exceptions"]["tokens"].append({"token": a.token, "reason": a.reason.strip(), "note": note, "at": now()})
+            U.save_map(project, umap, f"except token {a.token}", note)
+            emit({"ok": True, "exception": umap["exceptions"]["tokens"][-1]})
+        if a.audit_path:
+            if U.bad_path(a.audit_path.replace("*", "x")):
+                block("invalid_arguments", "--audit-path는 저장소 안 경로 패턴이어야 합니다.")
+            e = {"path": a.audit_path, "value": a.value or "", "reason": a.reason.strip(), "note": note, "at": now()}
+            umap["exceptions"]["audit"].append(e)
+            U.save_map(project, umap, f"except audit {a.audit_path} {a.value or '*'}", note)
+            emit({"ok": True, "exception": e})
+        block("invalid_arguments", "--token 또는 --audit-path가 필요합니다.")
+    block("invalid_arguments", f"알 수 없는 동작: {a.action}")
+
+
+def cmd_token_check(a) -> None:
+    project = project_of(a)
+    require_planning(project)
+    umap = U.load_map(project)
+    if umap is None:
+        block("no_ui_map", f"{U.UI_MAP_REL}이 없습니다. ui-map tokens --file <CSS 파일> --note로 토큰 출력을 먼저 설정하세요.")
+    r = U.token_check(project, umap)
+    emit({"ok": r["ok"], **r}, 0 if r["ok"] else 2)
+
+
+def cmd_token_audit(a) -> None:
+    project = project_of(a)
+    require_planning(project)
+    prof, uprof, plan = _ui_ctx(project, plan_required=bool(a.batch))
+    umap = U.load_map(project) or U.empty_map()
+    r = U.token_audit(project, prof, uprof, plan, a.batch, umap)
+    emit({**r, "batch": a.batch}, 0 if r["ok"] else 2)
+
+
+def _ui_batch(project: Path, bid: str):
+    require_planning(project)
+    st = require_state(project)
+    if st["plan"]["status"] != "approved":
+        block("plan_not_approved", "UI Brief는 승인된 구현 계획의 배치에만 만듭니다.")
+    prof, uprof, plan = _ui_ctx(project, plan_required=True)
+    b = U.batches_by_id(plan).get(bid)
+    if not b or bid not in st["batches"]:
+        block("unknown_batch", f"승인된 계획에 {bid} 배치가 없습니다.")
+    if b.get("kind") == "non_ui" or not (b.get("screens") or U.comp_list(b, "new") or U.comp_list(b, "reuse")):
+        block("not_ui_batch", f"{bid}는 화면·컴포넌트가 없는 배치입니다(UI Brief 대상 아님).")
+    if sha_file(project / PLAN_JSON_REL) != st["plan"]["approved"]["hashes"].get(PLAN_JSON_REL):
+        block("plan_modified", "승인 이후 계획 파일이 바뀌었습니다. UI Brief를 만들지 않았습니다.")
+    dinfo = design_info(project)
+    if dinfo["level"] not in ("L2", "L3"):
+        block("design_not_ready", f"디자인 준비 수준이 {dinfo['level']}입니다({dinfo.get('reason')}). UI Brief에는 승인된 UX Spec이 필요합니다.")
+    changes = baseline_changes(st["plan"]["approved"]["inputs"], input_baseline(project, planning_gate(project), dinfo))
+    if changes:
+        block("plan_outdated", "계획 승인 이후 입력 문서가 바뀌었습니다. check로 상태를 확인하세요.", changed=changes)
+    return st, prof, uprof, plan, dinfo
+
+
+def cmd_ui_brief(a) -> None:
+    project = project_of(a)
+    st, prof, uprof, plan, dinfo = _ui_batch(project, a.batch)
+    umap = U.load_map(project)
+    brief = U.build_brief(project, st, plan, a.batch, prof, uprof, dinfo, load_model(project), umap)
+    rel = U.ui_rel(a.batch, "brief.json")
+    old = U.read_json(project, rel)
+    U.write_json(project, rel, brief)
+    skel = U.plan_skeleton(brief)
+    out = {"ok": True, "brief": rel, "digest": brief["digest"], "changed": (old or {}).get("digest") != brief["digest"],
+           "summary": {"screens": {s: {"states_defined": sum(1 for x in v["states"] if x["defined"]), "actions": len(v["actions"]),
+                                       "acs": [x["id"] for x in v["acs"]], "vd": [x["id"] for x in v["vd"]]} for s, v in brief["screens"].items()},
+                       "components": {c: v["role"] for c, v in brief["components"].items()}, "token_source": brief["tokens"]["source"]},
+           "warnings": brief["warnings"], "ui_plan": U.ui_rel(a.batch, "plan.json"),
+           "next": f"Claude가 {U.ui_rel(a.batch, 'plan.json')}을 작성(아래 skeleton에서 시작)한 뒤 ui-plan-validate --batch {a.batch}"}
+    if a.full:
+        out["brief_data"] = brief
+    if not (project / U.ui_rel(a.batch, "plan.json")).exists():
+        out["skeleton"] = skel
+    emit(out)
+
+
+def cmd_ui_plan_validate(a) -> None:
+    project = project_of(a)
+    st, prof, uprof, plan, dinfo = _ui_batch(project, a.batch)
+    umap = U.load_map(project)
+    stored = U.read_json(project, U.ui_rel(a.batch, "brief.json"))
+    if not stored or stored.get("_invalid"):
+        block("no_ui_brief", f"UI Brief가 없습니다. ui-brief --batch {a.batch}을 먼저 실행하세요.")
+    if stored.get("digest") != U.digest({k: v for k, v in stored.items() if k != "digest"}):
+        block("brief_modified", "UI Brief 파일이 엔진 밖에서 바뀌었습니다. 직접 고치지 않습니다. ui-brief로 다시 만드세요.")
+    now_brief = U.build_brief(project, st, plan, a.batch, prof, uprof, dinfo, load_model(project), umap)
+    uplan = U.read_json(project, U.ui_rel(a.batch, "plan.json"))
+    if uplan is None:
+        block("no_ui_plan", f"UI Plan이 없습니다. {U.ui_rel(a.batch, 'plan.json')}을 작성하세요(ui-brief의 skeleton에서 시작).")
+    ledger_ids = {i["id"] for i in L.load(project)["items"]}
+    r = U.validate_ui_plan(project, uplan, now_brief, plan, a.batch, umap, uprof, ledger_ids)
+    if stored.get("digest") != now_brief["digest"]:
+        r["errors"].insert(0, "[brief_stale] 저장된 UI Brief가 현재 승인 문서·계획·대응표와 다릅니다. ui-brief를 다시 실행하세요")
+        r["ok"] = False
+    rec = {"at": now(), "ok": r["ok"], "brief_digest": now_brief["digest"], "plan_sha256": sha_file(project / U.ui_rel(a.batch, "plan.json")),
+           "errors": r["errors"], "warnings": r["warnings"], "counts": r["counts"]}
+    U.write_json(project, U.ui_rel(a.batch, "validation.json"), rec)
+    emit({"batch": a.batch, **r, "record": U.ui_rel(a.batch, "validation.json")}, 0 if r["ok"] else 2)
+
+
 # ---------------------------------------------------------------- 진입점
 class JsonArgParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -1647,6 +1882,15 @@ def main() -> None:
     s.add_argument("--reason", default=""); s.add_argument("--note", default="")
     s = add("accept-fault-injection", cmd_accept_fi); s.add_argument("--batch", required=True); s.add_argument("--ac", required=True); s.add_argument("--note", default="")
     s = add("guard", cmd_guard); s.add_argument("--path", action="append"); s.add_argument("--base"); s.add_argument("--batch")
+    s = add("ui-map", cmd_ui_map); s.add_argument("action", choices=("show", "check", "candidates", "register", "remove", "tokens", "except"))
+    s.add_argument("--batch"); s.add_argument("--cmp"); s.add_argument("--source", default="existing"); s.add_argument("--path"); s.add_argument("--export")
+    s.add_argument("--package"); s.add_argument("--replace", action="store_true"); s.add_argument("--note", default="")
+    s.add_argument("--file"); s.add_argument("--format"); s.add_argument("--var-pattern"); s.add_argument("--export-cmd"); s.add_argument("--alias", action="append")
+    s.add_argument("--token"); s.add_argument("--audit-path"); s.add_argument("--value"); s.add_argument("--reason", default="")
+    add("token-check", cmd_token_check)
+    s = add("token-audit", cmd_token_audit); s.add_argument("--batch")
+    s = add("ui-brief", cmd_ui_brief); s.add_argument("--batch", required=True); s.add_argument("--full", action="store_true")
+    s = add("ui-plan-validate", cmd_ui_plan_validate); s.add_argument("--batch", required=True)
     a = ap.parse_args()
     try:
         a.fn(a)
