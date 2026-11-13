@@ -159,9 +159,8 @@ def main() -> int:
         old_hashes = dict(g0["planning_hashes"])
         for f in PLANNING:
             doc(d, f, 2, "본문 v2" if f.endswith("03-user-stories.md") else "본문")
-        edit(d, r"(  planning:\n    status:) in_progress", r"\1 awaiting_approval")
-        edit(d, r"(  planning:\n.*?\n    revision:) 1", r"\1 2")
-        ps(d, "event", "--stage", "planning", "--event", "submitted", "--revision", "2")
+        # T6 제출은 공식 명령(submit)으로 합니다(event submitted 우회 경로는 planning에서 차단됨).
+        assert ps(d, "submit", "--stage", "planning", "--revision", "2", "--confirm")[0] == 0
         code, out = ps(d, "approve", "--stage", "planning", "--revision", "2", "--note", "r2 승인")
         text = state(d)
         g2 = pd_core.read_gate(d)

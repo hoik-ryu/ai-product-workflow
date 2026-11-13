@@ -29,7 +29,7 @@
 | T3 | 모든 `awaiting_approval` | 수정 요청 | 같은 단계 `in_progress` → `awaiting_approval` | 파일 수정(확인 후), `revision += 1`, history `changes_requested` + `submitted` |
 | T4 | discovery `awaiting_approval` | 명시적 승인 | discovery `approved` | `approved.{revision,at,hashes}` 기록. planning `locked` → `not_started` (T7로 이미 `outdated`면 `outdated` 유지) |
 | T5 | planning `not_started`/`outdated` | 사용자가 생성 확인 | planning `in_progress` | 02 → 05 순서로 생성. 파일 하나가 끝날 때마다 즉시 `artifacts_done`에 추가 |
-| T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `revision += 1`, history `submitted` |
+| T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `ps_state.py submit --stage planning --revision N+1 --confirm`으로만 기록: discovery 기준·revision(정확히 +1)·front matter 검증, `revision += 1`, `artifacts_done` 비움, history `submitted`. 승인 해시는 쓰지 않음. design `locked` 유지 |
 | T7 | discovery `approved` | 사용자가 discovery 변경을 원함 | discovery `in_progress` | discovery `approved` 초기화. planning이 `locked`/`not_started`가 아니면 `outdated`로 바꾸고 planning `approved`도 초기화. design은 `locked`로 되돌림 |
 | T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 승인 기록. design `locked` → `not_started`. `current_stage: design`. Milestone 1 완료 |
 | T9 | planning `approved` | 사용자가 planning 변경을 원함(명시적 확인) | planning `in_progress` | `ps_state.py reopen --stage planning --revision N --confirm`으로만 기록: 승인 기록 검증, planning `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존, 해시 재계산 없음), design `locked`, `current_stage: planning`. revision은 유지(다음 제출에서 +1) |

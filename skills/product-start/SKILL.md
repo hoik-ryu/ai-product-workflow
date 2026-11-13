@@ -101,14 +101,14 @@ disable-model-invocation: true
 1. planning이 `not_started`/`outdated`이면 discovery revision N을 기준으로 파일 4개(02–05)를 생성한다고 알립니다. 그중 이미 있는 파일이 있으면(outdated 사이클) 어떤 파일을 수정하는지, 변경 근거(discovery rN → rM)가 무엇인지 설명하고 `file-safety.md`에 따라 확인을 받습니다. 확인되면 상태를 `in_progress`로, `based_on_discovery_revision: N`, `artifacts_done: []`로 하고 `ps_state.py event --stage planning --event generated ...`로 기록합니다.
 2. `templates/`에 따라 02 → 03 → 04 → 05 순서로 생성합니다. `id-conventions.md`를 따릅니다. `artifacts_done`에 이미 있는 파일은 건너뜁니다(재개). 파일을 **하나 쓸 때마다** state의 `artifacts_done`에 추가합니다.
 3. 추적성 점검(`id-conventions.md`)을 수행하고 결과를 05 문서의 `커버리지 점검(Coverage Check)` 섹션에 씁니다.
-4. planning `revision`을 1 올리고 상태를 `awaiting_approval`로 바꾸고 `artifacts_done`을 비운 뒤 `ps_state.py event --stage planning --event submitted ...`로 기록합니다. 5단계로 이동합니다.
+4. 4개 문서의 front matter `revision`을 제출할 revision(현재 + 1)으로 맞춘 뒤 `ps_state.py submit --project . --stage planning --revision <현재 + 1> --confirm --note "<제출 요지>"`를 실행합니다. 스크립트가 discovery 기준(승인·해시 일치)·revision·front matter를 검증하고, revision 갱신·`awaiting_approval`·`artifacts_done` 비움·history `submitted`를 한 번에 기록하며, 추적성 점검 결과(`traceability`)를 돌려줍니다. state.yaml의 revision·status를 직접 바꾸거나 `event --event submitted`로 대신하지 않습니다. 거부되면 이유를 보고하고 멈춥니다. 5단계로 이동합니다(추적성 미해결 항목은 승인 요청 때 함께 제시).
 
 ## 5단계 — Planning 승인 게이트
 
 제시할 내용: 개수(FR/NFR/US/FLOW/AC), Must FR 목록, Planning 중 새로 생긴 ASM/Q, 추적성 점검 결과, 파일 경로, revision. **승인 / 수정 요청**을 묻고 멈춰서 기다립니다.
 
 - 명시적 승인 → `ps_state.py approve --project . --stage planning --revision <제시한 N> --note "<승인 요지>"`를 실행합니다. 스크립트가 파일 4개의 해시, planning `approved`, design `locked` → `not_started`, `current_stage: design`, history `approved`를 기록합니다(승인된 discovery revision을 기준으로 하지 않으면 거부). 6단계로 이동합니다.
-- 수정 요청 → 상태를 `in_progress`로 바꾸고 `ps_state.py event --stage planning --event changes_requested ...`로 기록합니다. 영향받는 파일과 하위 ID를 파악합니다(예: FR이 바뀌면 해당 US, FLOW, AC). 설명 → 확인 → `file-safety.md`에 따라 반영 → 추적성 재점검 → `revision`을 1 올림 → `awaiting_approval` → 다시 제시합니다. Planning 파일 4개는 단계 revision을 공유합니다. 그래서 내용이 바뀌지 않는 파일도 front matter `revision`만 올라간다는 사실을 설명에 포함해야 합니다.
+- 수정 요청 → 상태를 `in_progress`로 바꾸고 `ps_state.py event --stage planning --event changes_requested ...`로 기록합니다. 영향받는 파일과 하위 ID를 파악합니다(예: FR이 바뀌면 해당 US, FLOW, AC). 설명 → 확인 → `file-safety.md`에 따라 반영 → 추적성 재점검 → 4단계 4번의 `submit`(revision + 1) → 다시 제시합니다. Planning 파일 4개는 단계 revision을 공유합니다. 그래서 내용이 바뀌지 않는 파일도 front matter `revision`만 올라간다는 사실을 설명에 포함해야 합니다.
 - 수정 요청이 실제로는 Discovery의 사실(문제, 사용자, 범위)에 관한 것이면 → Discovery를 다시 열어야 하고(T7), 그러면 planning이 `outdated`가 된다는 점을 설명하고 먼저 확인을 받습니다.
 
 ## 6단계 — Milestone 1 완료
@@ -117,4 +117,4 @@ disable-model-invocation: true
 
 사용자가 승인된 문서를 바꾸려 하면 영향을 확인받은 뒤 `state-machine.md`의 T7(discovery) 또는 T9(planning)를 적용합니다.
 
-- T9(planning): 영향(현재 planning 승인과 design 잠금 해제가 무효가 되고, 재승인 뒤 내용이 바뀌었으면 디자인이 outdated로 재검토됨)을 설명하고 명시적 확인을 받은 뒤 `ps_state.py reopen --project . --stage planning --revision <현재 승인 revision> --confirm --note "<변경 요지·확인 문장>"`을 실행합니다. 스크립트가 승인 기록을 검증하고, planning `in_progress`, `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존), design `locked`, `current_stage: planning`, history `reopened`를 한 번에 기록합니다. state.yaml의 상태·해시를 직접 고치거나 `event --event reopened`로 대신하지 않습니다. 거부되면 이유를 보고하고 멈춥니다. 이후 4단계 2번부터(수정 → 추적성 점검 → revision+1 제출) 진행합니다.
+- T9(planning): 영향(현재 planning 승인과 design 잠금 해제가 무효가 되고, 재승인 뒤 내용이 바뀌었으면 디자인이 outdated로 재검토됨)을 설명하고 명시적 확인을 받은 뒤 `ps_state.py reopen --project . --stage planning --revision <현재 승인 revision> --confirm --note "<변경 요지·확인 문장>"`을 실행합니다. 스크립트가 승인 기록을 검증하고, planning `in_progress`, `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존), design `locked`, `current_stage: planning`, history `reopened`를 한 번에 기록합니다. state.yaml의 상태·해시를 직접 고치거나 `event --event reopened`로 대신하지 않습니다. 거부되면 이유를 보고하고 멈춥니다. 이후 4단계 2번부터(수정 → 추적성 점검 → `submit`으로 revision+1 제출) 진행합니다.
