@@ -157,11 +157,13 @@ def main() -> int:
         pl = text.split("  planning:")[1].split("  design:")[0]
         check("U9 정상 제출: awaiting_approval·revision 1·artifacts_done 비움(주석 유지)·design locked 유지",
               code == 0 and status(text, "planning") == "awaiting_approval" and re.search(r"^    revision: 1$", pl, re.M)
-              and re.search(r"^    artifacts_done: \[\]     # 현재 revision[^\n]*\n    approved:$", pl, re.M)
+              and re.search(r"^    artifacts_done: \[\]     # 현재 revision[^\n]*\n    submitted:", pl, re.M)
               and status(text, "design") == "locked", out)
-        check("U10 승인 해시를 만들지 않음(planning approved는 비어 있고, 제출 해시는 출력에만 전체 기록)",
+        snap = pl.split("    submitted:")[1].split("    approved:")[0]
+        check("U10 승인 해시를 만들지 않음(planning approved는 비어 있고, 제출 해시 전체는 submitted 스냅샷과 출력에만)",
               re.search(r"^    approved:\n      revision: null\n      at: null\n      hashes: \{\}$", pl, re.M)
-              and not re.search(r"[0-9a-f]{64}", pl) and out["submitted_hashes"] == hashes, pl)
+              and not re.search(r"[0-9a-f]{64}", pl.split("    approved:")[1]) and out["submitted_hashes"] == hashes
+              and all(f"        {f}: {h}" in snap for f, h in hashes.items()) and f'at: "{out["submitted_at"]}"' in snap, pl)
         hist = re.findall(r"^  - \{.*\}$", text, re.M)
         check("U11 history에 submitted 정확히 1건(revision 1, src: engine, 개수·추적성·제출 해시 앞 8자)",
               len(hist) == len(re.findall(r"^  - \{.*\}$", before, re.M)) + 1 and "stage: planning, event: submitted, revision: 1" in hist[-1]

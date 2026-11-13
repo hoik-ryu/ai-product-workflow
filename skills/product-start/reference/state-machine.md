@@ -16,7 +16,7 @@
 - `locked`: 이전 단계가 승인되지 않았습니다. 이 단계를 시작해서는 안 되고 파일도 만들면 안 됩니다.
 - `not_started`: 잠금이 해제됐고 아직 아무것도 쓰지 않았습니다.
 - `in_progress`: 인터뷰 중(discovery)이거나 파일을 생성·수정 중입니다.
-- `awaiting_approval`: 완성된 revision을 제시했고 명시적 결정을 기다리는 중입니다.
+- `awaiting_approval`: 완성된 revision을 제시했고 명시적 결정을 기다리는 중입니다. planning은 제출 스냅샷(`submitted.{revision, at, hashes}`)이 있어야 합니다.
 - `approved`: 사용자가 `approved.revision`을 명시적으로 승인했고 파일 해시가 기록됐습니다.
 - `outdated`: 이전 discovery revision을 기준으로 생성·승인됐습니다. 승인 전에 다시 생성하거나 재확인해야 합니다.
 
@@ -29,9 +29,9 @@
 | T3 | 모든 `awaiting_approval` | 수정 요청 | 같은 단계 `in_progress` → `awaiting_approval` | 파일 수정(확인 후), `revision += 1`, history `changes_requested` + `submitted` |
 | T4 | discovery `awaiting_approval` | 명시적 승인 | discovery `approved` | `approved.{revision,at,hashes}` 기록. planning `locked` → `not_started` (T7로 이미 `outdated`면 `outdated` 유지) |
 | T5 | planning `not_started`/`outdated` | 사용자가 생성 확인 | planning `in_progress` | 02 → 05 순서로 생성. 파일 하나가 끝날 때마다 즉시 `artifacts_done`에 추가 |
-| T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `ps_state.py submit --stage planning --revision N+1 --confirm`으로만 기록: discovery 기준·revision(정확히 +1)·front matter 검증, `revision += 1`, `artifacts_done` 비움, history `submitted`. 승인 해시는 쓰지 않음. design `locked` 유지 |
+| T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `ps_state.py submit --stage planning --revision N+1 --confirm`으로만 기록: discovery 기준·revision(정확히 +1)·front matter 검증, `revision += 1`, `artifacts_done` 비움, 제출 스냅샷 `submitted.{revision, at, hashes}`(전체 SHA-256) 기록(이전 스냅샷은 덮어씀), history `submitted`. 승인 해시는 쓰지 않음. design `locked` 유지 |
 | T7 | discovery `approved` | 사용자가 discovery 변경을 원함 | discovery `in_progress` | discovery `approved` 초기화. planning이 `locked`/`not_started`가 아니면 `outdated`로 바꾸고 planning `approved`도 초기화. design은 `locked`로 되돌림 |
-| T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 승인 기록. design `locked` → `not_started`. `current_stage: design`. Milestone 1 완료 |
+| T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`으로 거부, 스냅샷 없으면 `submission_snapshot_missing`). 승인 기록(approved.hashes = 스냅샷), 스냅샷 비움. design `locked` → `not_started`. `current_stage: design`. Milestone 1 완료 |
 | T9 | planning `approved` | 사용자가 planning 변경을 원함(명시적 확인) | planning `in_progress` | `ps_state.py reopen --stage planning --revision N --confirm`으로만 기록: 승인 기록 검증, planning `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존, 해시 재계산 없음), design `locked`, `current_stage: planning`. revision은 유지(다음 제출에서 +1) |
 
 규칙:
@@ -62,11 +62,21 @@
 | planning이 `locked` / `not_started`인데 planning 파일이 존재하지 않는가 | 예상치 못한 파일 → 보고 후 멈춤. 덮어쓰거나 산출물로 편입하지 않습니다. |
 | front matter `revision`이 제출·승인된 파일은 단계 `revision`과 같고, `in_progress` 중에 쓴 파일은 단계 `revision + 1`(준비 중인 revision)과 같은가 | 다름 → 수동 편집으로 보고합니다. |
 | `approved` 단계의 파일에 대해 현재 `shasum -a 256` 값이 기록된 해시와 같은가 | 다름 → "승인된 문서가 변경됨"으로 보고합니다(아래 참조). |
-| `ps_state.py check`가 통과하는가(history·승인 시각이 UTC 형식이고 미래가 아니며 순서가 맞음) | 문제 → 보고합니다. 기존 기록은 고치지 않습니다(사용자에게 알림). |
+| `ps_state.py check`가 통과하는가(history·승인 시각이 UTC 형식이고 미래가 아니며 순서가 맞음, 승인 대기 문서가 제출 스냅샷과 같음) | 문제 → 보고합니다. 기존 기록은 고치지 않습니다(사용자에게 알림). |
 
 3. `state.yaml`이 없는데 `docs/planning/`에 파일이 있으면 → 파일 목록을 보고하고 아무것도 쓰지 않은 채 진행 방법을 묻습니다(예: 파일을 다른 곳으로 옮기기, 다른 디렉터리에서 시작하기). 답을 받을 때까지 멈춥니다.
 
 불일치가 있으면 기대한 상태, 실제 상태, 선택지를 보고합니다. 스스로 고치지 않습니다.
+
+### 승인 무결성(제출 스냅샷)
+
+불변식: **승인되는 문서 = 제출된 문서.** `approve`는 `stages.<단계>.submitted.hashes`(제출 시점 전체 SHA-256)와 현재 문서가 모두 같을 때만 승인합니다.
+
+- 기록: T6 `submit`이 `submitted.{revision, at, hashes}`를 `approved` 블록 앞에 씁니다. 재제출(T3·T9 뒤)은 항상 새 스냅샷으로 덮어쓰고, `approve`는 스냅샷 revision이 현재 revision과 같을 때만 씁니다(`submission_snapshot_stale`).
+- 비교: `approve`·`check`가 현재 문서와 비교합니다. 내용·front matter 변경과 삭제는 모두 `changed_since_submission`입니다. 선택지: (a) 수정 요청(T3) 후 다시 제출, (b) 제출 시점 내용으로 복원.
+- 정리: 승인되면 스냅샷을 비웁니다(같은 전체 해시가 `approved.hashes`에, 앞 8자가 history `submitted`·`approved`에 남음). `approved` 상태에 스냅샷이 남아 있으면 `check`·`reopen`이 문제로 보고합니다.
+- 하위 호환: 스냅샷 블록이 없거나 `revision: null`이면 "스냅샷 없음"입니다. 상태 파일은 그대로 읽히며, planning이 `awaiting_approval`이면 `check`는 경고만 하고 `approve`는 거부합니다(`submission_snapshot_missing`). 처리: 사용자 승인 후 `ps_state.py migrate-snapshot --stage planning --revision N --confirm` — history의 마지막 planning 기록이 스크립트(`submit`)가 남긴 같은 revision의 `submitted`이고, 거기 적힌 파일별 제출 해시(앞 8자)가 현재 문서와 모두 같을 때만 현재 전체 해시를 스냅샷으로 기록합니다(`source: migrated`, `at`은 원래 제출 시각, 상태·history는 바꾸지 않음). 확인할 수 없으면(`snapshot_unverifiable`) 수정 요청(T3) 후 다시 제출합니다.
+- discovery: 같은 불변식을 적용하되, 제출 명령(T2 CLI)이 아직 없어 스냅샷이 있을 때만 비교합니다. 스냅샷이 없으면 기존 경로(승인 시점 해시 기록)를 유지합니다. discovery 제출 CLI를 추가할 때 스냅샷을 필수로 바꿉니다.
 
 ### 승인된 문서가 변경된 경우(해시 불일치)
 

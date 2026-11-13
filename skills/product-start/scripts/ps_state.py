@@ -4,10 +4,11 @@
 D-001: LLM이 history·승인 시각을 추측해 쓰지 않도록, 시각이 들어가는 기록은 이 스크립트가 실제 시스템 UTC 시각으로 씁니다.
 - `now`: 현재 UTC 시각(project.created_at 등에 그대로 씀)
 - `event`: history에 전이 항목 하나 추가(시각은 스크립트가 정함)
-- `approve`: 명시적 승인 전이(T4 discovery·T8 planning) — 산출물 해시 계산, approved.{revision, at, hashes}, 상태·잠금 해제, history `approved`
+- `approve`: 명시적 승인 전이(T4 discovery·T8 planning) — 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`), 산출물 해시 계산, approved.{revision, at, hashes}, 스냅샷 비움, 상태·잠금 해제, history `approved`
 - `reopen`: 승인된 planning을 다시 엶(T9, `--confirm` 필수) — 승인 기록 검증, approved 초기화(이전 승인은 history에 보존), design 잠금, history `reopened`
-- `submit`: planning 제출(T6, `--confirm` 필수) — 다음 revision·front matter·discovery 기준 검증, awaiting_approval, artifacts_done 비움, 추적성 보고, history `submitted`
-- `check`: 읽기 전용. history·승인 시각이 형식에 맞고 미래가 아니며 순서가 맞는지 검사(기존 기록은 고치지 않음)
+- `submit`: planning 제출(T6, `--confirm` 필수) — 다음 revision·front matter·discovery 기준 검증, awaiting_approval, artifacts_done 비움, 제출 스냅샷(submitted.{revision, at, hashes}) 기록, 추적성 보고, history `submitted`
+- `migrate-snapshot`: 스냅샷 도입 이전에 제출된 planning에 스냅샷을 기록(`--confirm` 필수, history의 제출 해시와 일치할 때만)
+- `check`: 읽기 전용. history·승인 시각이 형식에 맞고 미래가 아니며 순서가 맞는지, 승인 대기 문서가 제출 이후 바뀌지 않았는지 검사(기존 기록은 고치지 않음)
 
 명시적 승인인지(사용자 문장) 판단은 Skill(LLM)이 합니다. 이 스크립트는 판단하지 않고 기록만 합니다.
 기존 state.yaml(이 스크립트 이전 기록)과 호환됩니다: 새 history 항목에만 `src: engine`이 붙고, 기존 항목은 그대로 둡니다.
@@ -218,6 +219,25 @@ def cmd_approve(a) -> None:
         if str(a.revision) != rev:
             raise Blocked("revision_mismatch", f"제시된 revision({a.revision})이 현재 {a.stage} revision({rev})과 다릅니다. 현재 revision을 다시 제시하세요.")
         files = ARTIFACTS[a.stage]
+        # 승인 무결성: 승인할 문서는 제출 시점 문서와 같아야 합니다(제출 스냅샷 전체 해시 비교).
+        snap = read_snapshot(lines, s, e)
+        if snap is None:
+            if a.stage in SNAPSHOT_REQUIRED:
+                raise Blocked("submission_snapshot_missing", f"{a.stage} r{rev}의 제출 스냅샷이 없습니다(스냅샷 도입 이전 제출). 제출 시점 문서와 같은지 "
+                              "확인할 수 없어 승인하지 않습니다. 선택지: (a) 사용자 확인 후 migrate-snapshot --confirm(제출 기록의 해시와 일치할 때만 스냅샷 기록), "
+                              "(b) 수정 요청(T3) 후 submit으로 다시 제출.", revision=int(rev))
+        else:
+            if snap["revision"] != rev or parse_ts(snap["at"] or "") is None:
+                raise Blocked("submission_snapshot_stale", f"제출 스냅샷(r{snap['revision']})이 현재 제출 revision(r{rev})과 다르거나 형식이 맞지 않습니다. "
+                              "다른 제출의 스냅샷은 쓰지 않습니다. submit으로 다시 제출하세요.", snapshot=snap)
+            if set(snap["hashes"]) != set(files) or not all(HASH_RE.fullmatch(h) for h in snap["hashes"].values()):
+                raise Blocked("submission_snapshot_invalid", "제출 스냅샷의 파일 목록이나 해시 형식이 승인 대상과 맞지 않습니다. 기록을 고치지 않았습니다.",
+                              snapshot=snap, expected=files)
+            changed = snapshot_changes(project, snap["hashes"], files)
+            if changed:
+                raise Blocked("changed_since_submission", f"제출(r{rev}, {snap['at']}) 이후 문서가 바뀌었습니다. 제출된 내용과 다른 문서는 승인하지 않습니다. "
+                              "바뀐 내용을 반영하려면 수정 요청(T3) 후 다시 제출하고, 아니면 제출 시점 내용으로 복원하세요.",
+                              files=changed, submitted_at=snap["at"])
         missing = [f for f in files if not (project / f).is_file()]
         if missing:
             raise Blocked("artifact_missing", "승인할 산출물이 없습니다.", files=missing)
@@ -242,6 +262,9 @@ def cmd_approve(a) -> None:
         block = ["    approved:", f"      revision: {rev}", f"      at: \"{at}\"", "      hashes:"] + [f"        {f}: {h}" for f, h in hashes.items()]
         lines[k:end] = block
         s, e = stage_span(lines, a.stage)
+        if snap is not None:  # 스냅샷은 approved.hashes와 같음을 확인했으므로 비웁니다(전체 해시는 approved.hashes에 보존).
+            write_snapshot(lines, a.stage, None)
+            s, e = stage_span(lines, a.stage)
         set_scalar(lines, s, e, "status", "approved")
         unlocked = None
         if a.stage == "discovery":
@@ -257,12 +280,18 @@ def cmd_approve(a) -> None:
             ci = next((i for i, l in enumerate(lines) if re.match(r"^current_stage:", l)), None)
             if ci is not None:
                 set_scalar(lines, ci, ci + 1, "current_stage", "design", indent=0)
-        append_history(lines, history_entry(a.stage, "approved", int(rev), a.note or "explicit approval", at))
+        verified = None
+        if snap is not None:
+            verified = {"submitted_revision": int(rev), "submitted_at": snap["at"], "source": snap.get("source") or "submit"}
+        note = (a.note or "explicit approval") + (f". 제출 스냅샷(r{rev}, {snap['at']}"
+                                                  + (", 마이그레이션" if snap.get("source") == "migrated" else "") + ")과 일치 확인" if snap else "")
+        append_history(lines, history_entry(a.stage, "approved", int(rev), note, at))
         write_lines(project, lines)
     finally:
         if fd is not None:
             os.close(fd)
     emit({"ok": True, "stage": a.stage, "approved": {"revision": int(rev), "at": at, "hashes": hashes}, "unlocked": unlocked,
+          "verified_against_submission": verified,
           "note": "시각과 해시는 스크립트가 실제 시스템 시각·파일 내용으로 기록했습니다."})
 
 
@@ -289,6 +318,65 @@ def approved_record(lines: list[str], k: int, end: int) -> dict:
         if m:
             hashes[m.group(1)] = m.group(2)
     return {"revision": rev, "at": at, "hashes": hashes}
+
+
+# ---------------------------------------------------------------- 제출 스냅샷(승인 무결성)
+# stages.<stage>.submitted: { revision, at, hashes } — submit이 제출 문서의 전체 SHA-256을 기록하고, approve·check가 현재 문서와 비교합니다.
+# 승인되면 비웁니다(같은 해시가 approved.hashes에 보존됨). approved 블록 앞에 둡니다(기존 판독기는 approved 블록·승인 상태만 봄).
+# 블록이 없거나 revision이 null이면 "스냅샷 없음"입니다(스냅샷 도입 이전 상태 파일과 호환).
+SNAPSHOT_REQUIRED = ("planning",)  # discovery는 submit 명령이 없어 스냅샷이 있을 때만 비교합니다(state-machine.md 참조).
+
+
+def snapshot_block(lines: list[str], s: int, e: int) -> tuple[int, int] | None:
+    k = next((i for i in range(s, e) if re.match(r"^    submitted:[ \t]*(#.*)?$", lines[i])), None)
+    if k is None:
+        return None
+    end = k + 1
+    while end < e and lines[end].startswith("      "):
+        end += 1
+    return k, end
+
+
+def read_snapshot(lines: list[str], s: int, e: int) -> dict | None:
+    b = snapshot_block(lines, s, e)
+    if b is None:
+        return None
+    rec = approved_record(lines, *b)
+    if rec["revision"] in (None, "null"):
+        return None
+    src = get_scalar(lines, b[0] + 1, b[1], "source", 6)
+    return {**rec, **({"source": src} if src else {})}
+
+
+def write_snapshot(lines: list[str], stage: str, snap: dict | None) -> None:
+    """스냅샷 블록을 쓰거나(snap) 비웁니다(None). 블록이 없으면 approved 블록 바로 앞에 만듭니다."""
+    s, e = stage_span(lines, stage)
+    if snap is None:
+        body = ["      revision: null", "      at: null", "      hashes: {}"]
+    else:
+        body = ([f"      revision: {snap['revision']}", f"      at: \"{snap['at']}\""]
+                + ([f"      source: {snap['source']}"] if snap.get("source") else [])
+                + ["      hashes:"] + [f"        {f}: {h}" for f, h in snap["hashes"].items()])
+    head = "    submitted:             # 제출 스냅샷(submit이 기록, approve·check가 비교, 승인 시 비움)"
+    b = snapshot_block(lines, s, e)
+    if b is None:
+        if snap is None:
+            return  # 없는 블록을 비우려고 만들지 않음
+        k, _ = approved_block(lines, s, e)
+        lines[k:k] = [head] + body
+    else:
+        lines[b[0] + 1:b[1]] = body
+
+
+def snapshot_changes(project: Path, hashes: dict, files: list[str]) -> list[dict]:
+    out = []
+    for f in files:
+        p = project / f
+        if not p.is_file():
+            out.append({"file": f, "change": "deleted"})
+        elif sha256(p) != hashes.get(f):
+            out.append({"file": f, "change": "modified", "submitted": (hashes.get(f) or "")[:12], "current": sha256(p)[:12]})
+    return out
 
 
 def design_json_info(project: Path) -> dict | None:
@@ -349,6 +437,8 @@ def cmd_reopen(a) -> None:
             problems.append(f"planning 승인 상태인데 design이 {g_status}입니다(not_started여야 함)")
         if get_scalar(lines, s, e, "artifacts_done") != "[]":
             problems.append("approved 상태인데 artifacts_done이 비어 있지 않습니다")
+        if read_snapshot(lines, s, e) is not None:
+            problems.append("approved 상태인데 제출 스냅샷(submitted)이 비어 있지 않습니다(승인 시 비워져야 함)")
         if problems:
             raise Blocked("approval_record_invalid", "planning 승인 기록이 정상 상태가 아니어서 다시 열지 않습니다. 기록을 고치지 않았습니다.", problems=problems)
         changed = [f for f in files if not (project / f).is_file() or sha256(project / f) != rec["hashes"][f]]
@@ -482,6 +572,8 @@ def cmd_submit(a) -> None:
         set_scalar(lines, s, e, "status", "awaiting_approval")
         set_scalar(lines, s, e, "revision", str(a.revision))
         reset_list(lines, s, e, "artifacts_done")
+        prev_snap = read_snapshot(lines, *stage_span(lines, "planning"))  # T3 등으로 남은 이전 제출 스냅샷은 덮어씀(재사용하지 않음)
+        write_snapshot(lines, "planning", {"revision": a.revision, "at": at, "hashes": submitted})
         c = trace["counts"]
         short = " ".join(f"{Path(f).name.split('-')[0]}={h[:8]}…" for f, h in submitted.items())
         note = (f"{a.note or f'Planning r{a.revision} 제출'}. FR {c['FR']}·US {c['US']}·FLOW {c['FLOW']}·AC {c['AC']}, "
@@ -497,6 +589,7 @@ def cmd_submit(a) -> None:
             get_scalar(lines, ns, ne, "revision") == str(a.revision),
             get_scalar(lines, ns, ne, "artifacts_done") == "[]",
             approved_record(lines, nk, nend) == {"revision": "null", "at": "null", "hashes": {}},
+            read_snapshot(lines, ns, ne) == {"revision": str(a.revision), "at": at, "hashes": submitted},
             get_scalar(lines, *stage_span(lines, "design"), "status") == "locked",
             lines[:oe] == orig[:oe],
             len(history_items(lines)) == len(history_items(orig)) + 1,
@@ -509,7 +602,9 @@ def cmd_submit(a) -> None:
             os.close(fd)
     emit({"ok": True, "stage": "planning", "status": "awaiting_approval", "revision": a.revision, "submitted_at": at,
           "submitted_hashes": submitted, "traceability": trace, "warnings": warnings,
-          "note": "제출 해시는 기록용입니다(승인 해시 아님). 승인은 사용자의 명시적 승인 후 approve로만 기록합니다. "
+          "replaced_snapshot": {"revision": prev_snap["revision"], "at": prev_snap["at"]} if prev_snap else None,
+          "note": "제출 해시는 submitted 스냅샷으로 기록했습니다(승인 해시 아님). approve는 이 스냅샷과 현재 문서가 같을 때만 승인합니다. "
+                  "승인은 사용자의 명시적 승인 후 approve로만 기록합니다. "
                   "추적성 미해결 항목이 있으면 승인 요청 시 함께 제시합니다. design은 locked 그대로입니다."})
 
 
@@ -561,27 +656,131 @@ def cmd_check(a) -> None:
             t = parse_ts(at)
             if t is None or t > limit:
                 problems.append(f"stages.{st}.approved.at이 형식에 맞지 않거나 미래 시각입니다: {at}")
+    # 제출 스냅샷: 승인 대기 문서가 제출 이후 바뀌었는지(approve와 같은 기준)
+    warnings, submission = [], {}
+    for st in ARTIFACTS:
+        try:
+            s, e = stage_span(lines, st)
+        except Blocked:
+            continue
+        status, rev = get_scalar(lines, s, e, "status"), get_scalar(lines, s, e, "revision")
+        snap = read_snapshot(lines, s, e)
+        info = {"status": status, "revision": rev,
+                "snapshot": None if snap is None else {k: v for k, v in snap.items() if k != "hashes"}}
+        if status == "awaiting_approval":
+            if snap is None:
+                info["result"] = "no_snapshot"
+                if st in SNAPSHOT_REQUIRED:
+                    warnings.append(f"stages.{st}: r{rev} 제출 스냅샷이 없습니다(스냅샷 도입 이전 제출). approve가 거부합니다. "
+                                    "사용자 확인 후 migrate-snapshot --confirm으로 기록하거나, 수정 요청(T3) 후 다시 제출하세요.")
+            elif snap["revision"] != rev:
+                info["result"] = "stale"
+                problems.append(f"stages.{st}: 제출 스냅샷(r{snap['revision']})이 현재 제출 revision(r{rev})과 다릅니다")
+            else:
+                changed = snapshot_changes(project, snap["hashes"], ARTIFACTS[st])
+                info["result"] = "changed_since_submission" if changed else "unchanged"
+                if changed:
+                    info["changed_since_submission"] = changed
+                    problems.append(f"stages.{st}: 제출(r{rev}, {snap['at']}) 이후 문서가 바뀌었습니다(changed_since_submission): "
+                                    + ", ".join(f"{c['file']}({c['change']})" for c in changed))
+        elif snap is not None:
+            if status == "approved":
+                problems.append(f"stages.{st}: approved 상태인데 제출 스냅샷이 비어 있지 않습니다(승인 시 비워져야 함)")
+            else:
+                warnings.append(f"stages.{st}: 이전 제출 스냅샷(r{snap['revision']})이 남아 있습니다(다음 submit에서 덮어씀, 승인에 쓰이지 않음)")
+        submission[st] = info
     legacy = sum(1 for it in items if not it["engine"])
-    emit({"ok": not problems, "problems": problems, "history": len(items), "engine_recorded": len(items) - legacy, "legacy": legacy,
+    emit({"ok": not problems, "problems": problems, "warnings": warnings, "submission": submission,
+          "history": len(items), "engine_recorded": len(items) - legacy, "legacy": legacy,
           "note": "읽기 전용 검사입니다. 기존 기록은 고치지 않습니다(legacy = 이 스크립트 이전 또는 직접 쓴 항목)."}, 0 if not problems else 2)
+
+
+SUBMIT_LINE_RE = re.compile(r'^  - \{ at: "([^"]*)", stage: (\w+), event: submitted, revision: (\d+), note: "((?:[^"\\]|\\.)*)", src: engine \}$')
+
+
+def cmd_migrate_snapshot(a) -> None:
+    """스냅샷 도입 이전에 제출된 planning(awaiting_approval)에 제출 스냅샷을 기록하는 명시적 마이그레이션.
+    submit이 history에 남긴 제출 해시(파일별 앞 8자)와 현재 문서가 모두 일치할 때만 현재 전체 해시를 기록합니다.
+    확인할 수 없으면(수동 제출·해시 없음·불일치) 기록하지 않습니다. 상태·revision·history는 바꾸지 않습니다."""
+    project = Path(a.project).resolve()
+    if a.stage != "planning":
+        raise Blocked("unsupported_stage", "migrate-snapshot은 planning만 지원합니다(discovery는 제출 스냅샷을 쓰지 않음).")
+    if not a.confirm:
+        raise Blocked("confirmation_required", "스냅샷 마이그레이션은 사용자가 승인한 경우에만 실행합니다. 확인 후 --confirm으로 실행하세요.")
+    fd = lock(project)
+    try:
+        lines = read_lines(project)
+        orig = list(lines)
+        wf = get_scalar(lines, 0, len(lines), "workflow", 0)
+        if wf != "ai-product-workflow":
+            raise Blocked("not_workflow_state", f"{STATE_REL}의 workflow 값이 ai-product-workflow가 아닙니다({wf}). 다른 프로젝트의 상태 파일일 수 있어 바꾸지 않습니다.")
+        s, e = stage_span(lines, "planning")
+        status, rev = get_scalar(lines, s, e, "status"), get_scalar(lines, s, e, "revision")
+        if status != "awaiting_approval":
+            raise Blocked("not_awaiting_approval", f"planning 상태가 {status}입니다. 제출 대기(awaiting_approval) 상태에서만 마이그레이션합니다.")
+        if str(a.revision) != rev:
+            raise Blocked("revision_mismatch", f"제시된 revision({a.revision})이 현재 planning revision({rev})과 다릅니다.")
+        if read_snapshot(lines, s, e) is not None:
+            raise Blocked("snapshot_exists", "이미 제출 스냅샷이 있습니다. 마이그레이션이 필요하지 않습니다.")
+        h = next((i for i, l in enumerate(lines) if re.match(r"^history:", l)), None)
+        last = None
+        for it in history_items(lines):
+            l = lines[it["line"] - 1]
+            if re.search(r"\bstage:[ \t]*planning\b", l):
+                last = l
+        m = SUBMIT_LINE_RE.match(last or "") if h is not None else None
+        if not m or m.group(3) != rev:
+            raise Blocked("snapshot_unverifiable", f"history의 마지막 planning 기록이 스크립트(submit)가 남긴 r{rev} submitted가 아니어서 제출 시점 내용을 확인할 수 없습니다. "
+                          "수정 요청(T3) 후 submit으로 다시 제출하세요.", last_planning_history=last)
+        prefixes = dict(re.findall(r"\b(\d{2})=([0-9a-f]{8})…", m.group(4)))
+        files = ARTIFACTS["planning"]
+        keys = {f: Path(f).name.split("-")[0] for f in files}
+        if any(k not in prefixes for k in keys.values()):
+            raise Blocked("snapshot_unverifiable", "제출 기록에 파일별 제출 해시가 없어 제출 시점 내용을 확인할 수 없습니다. 수정 요청(T3) 후 submit으로 다시 제출하세요.")
+        current = {f: sha256(project / f) for f in files if (project / f).is_file()}
+        changed = [{"file": f, "change": "deleted"} if f not in current else {"file": f, "change": "modified", "submitted": prefixes[keys[f]], "current": current[f][:8]}
+                   for f in files if f not in current or current[f][:8] != prefixes[keys[f]]]
+        if changed:
+            raise Blocked("changed_since_submission", f"제출 기록(r{rev}, {m.group(1)})의 해시와 현재 문서가 다릅니다. 스냅샷을 기록하지 않았습니다.", files=changed)
+        snap = {"revision": rev, "at": m.group(1), "source": "migrated", "hashes": current}
+        write_snapshot(lines, "planning", snap)
+
+        ns, ne = stage_span(lines, "planning")
+        def without_snapshot(ls: list[str]) -> list[str]:
+            b = snapshot_block(ls, *stage_span(ls, "planning"))
+            return ls if b is None else ls[:b[0]] + ls[b[1]:]
+        post = [read_snapshot(lines, ns, ne) == {"revision": rev, "at": m.group(1), "hashes": current, "source": "migrated"},
+                without_snapshot(lines) == without_snapshot(orig), len(history_items(lines)) == len(history_items(orig))]
+        if not all(post):
+            raise Blocked("postcondition_failed", "결과가 예상과 달라 쓰지 않았습니다(state.yaml 그대로).", checks=post)
+        write_lines(project, lines)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    emit({"ok": True, "stage": "planning", "revision": int(rev), "snapshot": snap,
+          "verified_by": "history submitted 항목의 파일별 제출 해시(앞 8자)와 현재 전체 해시 비교",
+          "note": "상태·revision·history는 바꾸지 않았습니다. 이후 approve는 이 스냅샷과 비교합니다. 스냅샷 at은 원래 제출 시각입니다."})
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="/product-start state helper")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("now"); s.set_defaults(fn=cmd_now)
-    for name, fn in (("event", cmd_event), ("approve", cmd_approve), ("reopen", cmd_reopen), ("submit", cmd_submit), ("check", cmd_check)):
+    for name, fn in (("event", cmd_event), ("approve", cmd_approve), ("reopen", cmd_reopen), ("submit", cmd_submit), ("check", cmd_check),
+                     ("migrate-snapshot", cmd_migrate_snapshot)):
         s = sub.add_parser(name)
         s.add_argument("--project", required=True)
         s.set_defaults(fn=fn)
-        if name in ("event", "approve", "reopen", "submit"):
+        if name in ("event", "approve", "reopen", "submit", "migrate-snapshot"):
             s.add_argument("--stage", required=True)
             s.add_argument("--note", default="")
         if name == "event":
             s.add_argument("--event", required=True)
             s.add_argument("--revision", type=int, required=True)
-        if name in ("approve", "reopen", "submit"):
+        if name in ("approve", "reopen", "submit", "migrate-snapshot"):
             s.add_argument("--revision", type=int, required=True)
+        if name == "migrate-snapshot":
+            s.add_argument("--confirm", action="store_true", help="사용자가 마이그레이션을 승인했을 때만")
         if name == "reopen":
             s.add_argument("--confirm", action="store_true", help="사용자가 재개(승인 무효화)를 명시적으로 확인했을 때만")
         if name == "submit":

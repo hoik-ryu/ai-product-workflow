@@ -119,9 +119,10 @@ def main() -> int:
         # Planning
         for f, _ in zip(["02-prd", "03-user-stories", "04-user-flows", "05-acceptance-criteria"], range(4)):
             doc(d, f"docs/planning/{f}.md", 1)
-        edit(d, r"(  planning:\n    status:) not_started", r"\1 awaiting_approval")
-        edit(d, r"(  planning:\n.*?\n    revision:) 0", r"\1 1")
-        edit(d, r"based_on_discovery_revision: null", "based_on_discovery_revision: 9")
+        edit(d, r"(  planning:\n    status:) not_started", r"\1 in_progress")
+        edit(d, r"based_on_discovery_revision: null", "based_on_discovery_revision: 1")
+        assert ps(d, "submit", "--stage", "planning", "--revision", "1", "--confirm")[0] == 0  # T6(제출 스냅샷 기록)
+        edit(d, r"based_on_discovery_revision: 1", "based_on_discovery_revision: 9")  # 제출 뒤 기준이 어긋난 상태
         code, out = ps(d, "approve", "--stage", "planning", "--revision", "1")
         check("S10 승인된 discovery revision을 기준으로 하지 않은 planning 승인 거부", code == 2 and out["error"] == "discovery_not_basis", out)
         edit(d, r"based_on_discovery_revision: 9", "based_on_discovery_revision: 1")
@@ -136,7 +137,7 @@ def main() -> int:
         check("S13 /product-start 하네스 check.py 형식의 해시 줄 5개 일치", len(hm) == 5 and all(
             hashlib.sha256((d / p).read_bytes()).hexdigest() == h for p, h in hm), hm)
         code, out = ps(d, "check")
-        check("S14 check: 스크립트가 쓴 기록은 모두 문제 없음", code == 0 and out["ok"] and out["legacy"] == 0 and out["engine_recorded"] == 4, out)  # started·submitted·approved×2(거부된 호출은 기록 없음)
+        check("S14 check: 스크립트가 쓴 기록은 모두 문제 없음", code == 0 and out["ok"] and out["legacy"] == 0 and out["engine_recorded"] == 5, out)  # started·submitted×2(discovery event·planning submit)·approved×2(거부된 호출은 기록 없음)
 
         # 기존(legacy) 기록과 잘못된 시각
         e = root / "legacy"

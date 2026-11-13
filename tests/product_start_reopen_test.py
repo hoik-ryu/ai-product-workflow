@@ -86,9 +86,9 @@ def approved_project(root: Path, name: str) -> Path:
     assert ps(d, "approve", "--stage", "discovery", "--revision", "1")[0] == 0
     for f in PLANNING:
         doc(d, f, 1)
-    edit(d, r"(  planning:\n    status:) not_started", r"\1 awaiting_approval")
-    edit(d, r"(  planning:\n.*?\n    revision:) 0", r"\1 1")
+    edit(d, r"(  planning:\n    status:) not_started", r"\1 in_progress")
     edit(d, r"based_on_discovery_revision: null", "based_on_discovery_revision: 1")
+    assert ps(d, "submit", "--stage", "planning", "--revision", "1", "--confirm")[0] == 0  # 제출 스냅샷이 있어야 approve 가능
     code, out = ps(d, "approve", "--stage", "planning", "--revision", "1", "--note", "planning 승인")
     assert code == 0, out
     return d

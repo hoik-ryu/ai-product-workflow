@@ -33,6 +33,10 @@ stages:
       - docs/planning/04-user-flows.md
       - docs/planning/05-acceptance-criteria.md
     artifacts_done: []     # 현재 revision 사이클에서 작성을 마친 파일
+    submitted:             # 제출 스냅샷(submit이 기록, approve·check가 비교, 승인 시 비움)
+      revision: null
+      at: null
+      hashes: {}
     approved:
       revision: null
       at: null
