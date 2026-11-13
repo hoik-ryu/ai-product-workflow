@@ -116,3 +116,5 @@ disable-model-invocation: true
 승인된 revision, 파일 목록, 아직 해결되지 않은 Q/ASM, Design 단계가 열렸다는 사실(Milestone 1에서는 구현하지 않음)을 보고합니다. 산출물 커밋을 제안합니다. 예: `git add docs/planning .ai-workflow && git commit -m "..."`(실행은 사용자가 합니다).
 
 사용자가 승인된 문서를 바꾸려 하면 영향을 확인받은 뒤 `state-machine.md`의 T7(discovery) 또는 T9(planning)를 적용합니다.
+
+- T9(planning): 영향(현재 planning 승인과 design 잠금 해제가 무효가 되고, 재승인 뒤 내용이 바뀌었으면 디자인이 outdated로 재검토됨)을 설명하고 명시적 확인을 받은 뒤 `ps_state.py reopen --project . --stage planning --revision <현재 승인 revision> --confirm --note "<변경 요지·확인 문장>"`을 실행합니다. 스크립트가 승인 기록을 검증하고, planning `in_progress`, `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존), design `locked`, `current_stage: planning`, history `reopened`를 한 번에 기록합니다. state.yaml의 상태·해시를 직접 고치거나 `event --event reopened`로 대신하지 않습니다. 거부되면 이유를 보고하고 멈춥니다. 이후 4단계 2번부터(수정 → 추적성 점검 → revision+1 제출) 진행합니다.

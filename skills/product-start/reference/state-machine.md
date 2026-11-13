@@ -32,7 +32,7 @@
 | T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `revision += 1`, history `submitted` |
 | T7 | discovery `approved` | 사용자가 discovery 변경을 원함 | discovery `in_progress` | discovery `approved` 초기화. planning이 `locked`/`not_started`가 아니면 `outdated`로 바꾸고 planning `approved`도 초기화. design은 `locked`로 되돌림 |
 | T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 승인 기록. design `locked` → `not_started`. `current_stage: design`. Milestone 1 완료 |
-| T9 | planning `approved` | 사용자가 planning 변경을 원함 | planning `in_progress` | planning `approved` 초기화. design은 `locked`로 되돌림 |
+| T9 | planning `approved` | 사용자가 planning 변경을 원함(명시적 확인) | planning `in_progress` | `ps_state.py reopen --stage planning --revision N --confirm`으로만 기록: 승인 기록 검증, planning `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존, 해시 재계산 없음), design `locked`, `current_stage: planning`. revision은 유지(다음 제출에서 +1) |
 
 규칙:
 
@@ -75,6 +75,6 @@
 - 승인 후 discovery가 변경됨 → 현재 내용에 대해 discovery 승인은 더 이상 유효하지 않습니다. planning이 생성돼 있다면 이전 내용을 기준으로 한 것입니다.
   선택지: (a) 재검토: T7을 적용하고 현재 파일을 새 revision으로 제시해 승인을 받습니다. (b) 사용자가 파일을 복원(예: `git checkout -- <file>` 또는 백업에서 복원)한 뒤 재개합니다.
 - 승인 후 planning 파일이 변경됨 → planning 승인은 더 이상 유효하지 않고 design 잠금 해제도 보류됩니다.
-  선택지: (a) 재검토: T9를 적용하고 추적성을 점검한 뒤 승인을 받습니다. (b) 사용자가 복원합니다.
+  선택지: (a) 재검토: T9(`reopen --confirm`, 해시가 달라도 재개 가능하며 바뀐 파일이 history에 표시됨)를 적용하고 추적성을 점검한 뒤 승인을 받습니다. (b) 사용자가 복원합니다.
 
 변경된 승인 문서의 해시를 조용히 다시 기록하지 않습니다.
