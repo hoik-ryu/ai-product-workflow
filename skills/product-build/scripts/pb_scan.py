@@ -224,6 +224,11 @@ def route_hits(project: Path, files: list[str], screens: dict) -> dict:
     return out
 
 
+def import_re(stem: str) -> re.Pattern:
+    """파일 이름(stem)을 경로 끝으로 import하는 문장(`from '…/Button'`, `import '…/Button'`)."""
+    return re.compile(rf"""from\s+['"][^'"]*/{re.escape(stem)}['"]|import\s+['"][^'"]*/{re.escape(stem)}['"]""")
+
+
 def component_inventory(project: Path, comp_roots: list[str], src_files: list[str], cmps: dict) -> dict:
     """프로필 components 경로의 파일 → 대응 CMP(파일 안 'CMP-xxx' 표지 또는 이름 일치)와 사용처 수."""
     files = [f for f in src_files if any(f.startswith(r.rstrip("/") + "/") for r in comp_roots) and not is_test_path(f)]
@@ -235,7 +240,7 @@ def component_inventory(project: Path, comp_roots: list[str], src_files: list[st
         stem = Path(rel).stem
         markers = sorted(set(re.findall(r"CMP-\d{3}", txt[:2000])))
         by_name = name_to_cmp.get(re.sub(r"[^a-z0-9]", "", stem.lower()))
-        rx = re.compile(rf"""from\s+['"][^'"]*/{re.escape(stem)}['"]|import\s+['"][^'"]*/{re.escape(stem)}['"]""")
+        rx = import_re(stem)
         used_by = [f for f, t in texts.items() if f != rel and rx.search(t)]
         items.append({"file": rel, "name": stem, "cmp_markers": markers, "cmp_by_name": by_name, "used_by_count": len(used_by)})
     mapped = {}

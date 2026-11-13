@@ -85,7 +85,14 @@ def profile_or_block(project: Path, required: bool = True) -> dict:
 def run_validate(project: Path, st: dict | None, plan: dict, profile: dict, dinfo: dict) -> dict:
     model = load_model(project)
     v = validate(plan, model, profile, dinfo, (st or {}).get("waivers", [])) | {"_model": model}
-    ui_errs = U.plan_conflicts(U.load_map(project), plan)  # M3.1: 대응표가 있을 때만(없으면 기존 동작 그대로)
+    umap = U.load_map(project)
+    ui_errs = U.plan_conflicts(umap, plan)  # M3.1: 대응표가 있을 때만(없으면 기존 동작 그대로)
+    # 신규 CMP에 대응표 밖 기존 후보 파일이 있으면 차단(부품 경로가 있을 때만). 원장은 new_reasons가 있을 때만 읽습니다.
+    started = {k for k, x in ((st or {}).get("batches") or {}).items() if x.get("status") in U.STARTED}
+    cand_errs, cand_warns = (U.candidate_conflicts(project, plan, profile, U.ui_profile(profile)[0], umap, lambda: L.load(project)["items"], started)
+                             if isinstance(plan, dict) and v.get("derived") else ([], []))
+    ui_errs += cand_errs
+    v["warnings"] = v.get("warnings", []) + cand_warns
     if ui_errs:
         v["errors"] = v["errors"] + ui_errs
         v["ok"] = False
@@ -277,7 +284,21 @@ def cmd_scope(a) -> None:
         scr = sorted(set(scope["SCR_required"]) | set(scope["SCR_related_optional"]))
         out["groups"] = [{"key": g["key"], "screens": g["screens"]} for g in suggest_groups(model, scr, int(b["max_screens"]), int(b["min_screens"]))] if scr else []
     if a.draft:
-        out["draft"] = draft(model, scope, prof, ui_allowed)
+        umap = U.load_map(project)
+        mapped = set((umap or {}).get("components") or {})
+        out["draft"] = draft(model, scope, prof, ui_allowed, mapped)
+        if mapped:
+            out["reused_from_ui_map"] = sorted(c for bt in out["draft"]["batches"] for c in (bt.get("components") or {}).get("reuse", []) if c in mapped)
+        news = {c for bt in out["draft"]["batches"] for c in (bt.get("components") or {}).get("new", [])}
+        uprof = U.ui_profile(prof)[0]
+        if news and (uprof.get("component_roots") or prof["paths"].get("components")):
+            found = [x for x in U.candidates(project, prof, uprof, umap)["unmapped"] if x["cmp"] in news and x["candidates"]]
+            if found:
+                out["component_candidates"] = {
+                    "items": found,
+                    "note": "초안이 새로 만든다고 제안한 CMP에 대응표 밖 기존 후보 파일이 있습니다. 후보일 뿐 같은 부품이라는 확정이 아닙니다. "
+                            "같은 부품이면 사용자 확인 후 ui-map register --cmp --path --export --note로 등록하고 scope --draft를 다시 받습니다. "
+                            "그대로 두면 plan-validate가 unmapped_candidate_exists로 막습니다(다른 부품이면 원장 결정 ID를 components.new_reasons에)."}
         out["next"] = f"draft를 {PLAN_JSON_REL}로 저장해 제목·목표·작업·의존성·위험 태그를 다듬고 plan-validate"
     emit(out)
 
@@ -1869,7 +1890,10 @@ def cmd_ui_brief(a) -> None:
     out = {"ok": True, "brief": rel, "digest": brief["digest"], "changed": (old or {}).get("digest") != brief["digest"],
            "summary": {"screens": {s: {"states_defined": sum(1 for x in v["states"] if x["defined"]), "actions": len(v["actions"]),
                                        "acs": [x["id"] for x in v["acs"]], "vd": [x["id"] for x in v["vd"]]} for s, v in brief["screens"].items()},
-                       "components": {c: v["role"] for c, v in brief["components"].items()}, "token_source": brief["tokens"]["source"]},
+                       "components": {c: v["role"] for c, v in brief["components"].items()}, "token_source": brief["tokens"]["source"],
+                       "layout": {"screens": sorted(brief["layout"]["screens"]), "missing": brief["layout"]["missing"],
+                                  "patterns": bool(brief["layout"]["patterns"]["text"]),
+                                  "tokens": {g: len(v) for g, v in brief["layout"]["tokens"].items()}}},
            "warnings": brief["warnings"], "ui_plan": U.ui_rel(a.batch, "plan.json"),
            "next": f"Claude가 {U.ui_rel(a.batch, 'plan.json')}을 작성(아래 skeleton에서 시작)한 뒤 ui-plan-validate --batch {a.batch}"}
     if a.full:
@@ -1886,14 +1910,14 @@ def cmd_ui_plan_validate(a) -> None:
     stored = U.read_json(project, U.ui_rel(a.batch, "brief.json"))
     if not stored or stored.get("_invalid"):
         block("no_ui_brief", f"UI Brief가 없습니다. ui-brief --batch {a.batch}을 먼저 실행하세요.")
-    if stored.get("digest") != U.digest({k: v for k, v in stored.items() if k != "digest"}):
+    if not U.brief_intact(stored):
         block("brief_modified", "UI Brief 파일이 엔진 밖에서 바뀌었습니다. 직접 고치지 않습니다. ui-brief로 다시 만드세요.")
     now_brief = U.build_brief(project, st, plan, a.batch, prof, uprof, dinfo, load_model(project), umap)
     uplan = U.read_json(project, U.ui_rel(a.batch, "plan.json"))
     if uplan is None:
         block("no_ui_plan", f"UI Plan이 없습니다. {U.ui_rel(a.batch, 'plan.json')}을 작성하세요(ui-brief의 skeleton에서 시작).")
-    ledger_ids = {i["id"] for i in L.load(project)["items"]}
-    r = U.validate_ui_plan(project, uplan, now_brief, plan, a.batch, umap, uprof, ledger_ids)
+    ledger_items = {i["id"]: i for i in L.load(project)["items"]}
+    r = U.validate_ui_plan(project, uplan, now_brief, plan, a.batch, umap, uprof, ledger_items)
     if stored.get("digest") != now_brief["digest"]:
         r["errors"].insert(0, "[brief_stale] 저장된 UI Brief가 현재 승인 문서·계획·대응표와 다릅니다. ui-brief를 다시 실행하세요")
         r["ok"] = False
@@ -1958,6 +1982,30 @@ def _em_now(project: Path, prof: dict, bid: str, b: dict) -> list[dict]:
     return out
 
 
+def _ui_component_checks(project: Path, st: dict, plan: dict, bid: str, uprof: dict, uplan: dict | None, umap: dict | None, brief: dict,
+                         R: list[str], W: list[str]) -> dict:
+    """verify의 부품 검사(정적): 대응표·배치 범위 중복(map_problems --batch)과 UI Plan의 재사용 부품이 코드에서 참조되는지.
+    대응표가 없으면 하지 않습니다(기존 동작). 이 배치와 관계없는 대응표 문제는 경고로만 보고합니다.
+    차단(reasons): 배치 범위 중복 부품, 이 배치가 쓰는 CMP의 대응표 오류. 보고(warnings): planned_reuse_not_used, 그 밖의 대응표 문제."""
+    if not umap:
+        return {"status": "no_ui_map"}
+    mine = set(brief.get("components") or {})
+    mp = U.map_problems(project, umap, plan, st, bid, U.code_exts(uprof))
+    blocking = [m for m in mp["errors"] if m.startswith("[duplicate_component]") or any(c in m for c in mine)]
+    R += [f"[ui_map] {m}" for m in blocking]
+    W += [m for m in mp["errors"] if m not in blocking]
+    W += [m for m in mp["warnings"] if m.startswith("[possible_duplicate]") or any(c in m for c in mine)]
+    pb_ = U.batches_by_id(plan).get(bid) or {}
+    pats = ((pb_.get("paths") or {}).get("allow") or []) + ((pb_.get("paths") or {}).get("shared") or [])
+    files = [f for f in U.walk(project, None, ["node_modules", "dist", ".git", U.PREVIEW_DIR], U.code_exts(uprof))
+             if in_patterns(f, pats) and not is_test_path(f)]
+    refs = U.planned_reuse_refs(project, uplan, umap, files)
+    for x in refs["unused"]:  # 보고(경고): 정적 참조는 렌더링의 증거가 아니고, 없음도 확정 근거가 약해 verify를 막지 않습니다
+        W.append(f"[planned_reuse_not_used] {x['cmp']}({x['export']} · {x['path']}): UI Plan에서 재사용하기로 했지만({', '.join(x['screens'])}) "
+                 f"배치 범위 코드에서 import·사용을 찾지 못했습니다. 대응 부품을 쓰거나 UI Plan을 고친 뒤 다시 검증합니다")
+    return {"map": {"ok": not blocking, "errors": blocking, "duplicates": mp["duplicates"]}, "reuse": refs}
+
+
 def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: dict, ev: dict) -> dict:
     res = {"format": UV.UI_EVIDENCE_FORMAT, "active": True, "reasons": [], "warnings": []}
     R, W = res["reasons"], res["warnings"]
@@ -2004,6 +2052,7 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
         R.append(f"[token_audit] 직접 값 {ta['counts']['findings']}건(프로필 ui.audit.mode = block)")
     elif ta["findings"]:
         W.append(f"직접 값 {ta['counts']['findings']}건(감사 mode=warn, 차단 아님)")
+    components = _ui_component_checks(project, st, plan, bid, uprof, uplan, umap, now_brief, R, W)
     for sid, r in states.items():
         if r["required"] and r["status"] != "verified":
             R.append(f"[state_evidence] {sid}(필수 상태, 목표 E2): {r['status']} — {r['reason']}")
@@ -2020,7 +2069,7 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
                basis=UV.current_basis(project, list(now_brief["screens"]), uplan, umap),
                code={"run_id": run["run_id"], "at": run["at"], "valid": run["valid"], "code_tree": run["tree_after"],
                      "code_only_tree": run.get("code_only_tree"), "head": head_sha(project)},
-               states=states, ac_links=links, browser=browser, tokens=tokens,
+               states=states, ac_links=links, browser=browser, tokens=tokens, components=components,
                manual=[{"id": m["id"], "result": m["result"], "targets": m["targets"], "method": m["method"]} for m in ems],
                counts={k: sum(1 for r in states.values() if r["status"] == k) for k in
                        ("verified", "insufficient", "failing", "not_run", "untested", "manual_only", "invalid_run")},
@@ -2077,7 +2126,7 @@ def cmd_evidence_manual(a) -> None:
             block("unknown_ac", "이 배치의 AC가 아닙니다.", acs=bad_ac)
         if states:
             brief = U.read_json(project, U.ui_rel(a.batch, "brief.json"))
-            if not brief or brief.get("_invalid") or brief.get("digest") != U.digest({k: v for k, v in brief.items() if k != "digest"}):
+            if not brief or brief.get("_invalid") or not U.brief_intact(brief):
                 block("no_ui_brief", f"상태 증거는 UI Brief의 정의된 상태에만 기록합니다(ui-brief --batch {a.batch}).")
             defined = {x["id"] for sb in brief["screens"].values() for x in sb["states"] if x["defined"]}
             unknown = [x for x in states if x not in defined]

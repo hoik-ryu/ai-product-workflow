@@ -75,6 +75,7 @@ disable-model-invocation: true
 
 1. `scope`로 범위를 확인합니다(기본 Must). Should/Could를 넣을지 한 번만 묻습니다(권장: Must만).
 2. `scope --draft`의 골격을 `docs/build/implementation-plan.json`으로 저장한 뒤 다듬습니다: 배치 제목·목표, 작업 분해(fe/be/db/api/test), 의존성, 공통 컴포넌트(신규/재사용), 위험 태그, 완료 기준, 테스트 계획. `scan`의 컴포넌트·기존 코드 정보를 반영해 재사용을 우선합니다. 골격은 출발점일 뿐 정답이 아닙니다.
+   - 초안은 대응표에 있는 CMP를 재사용으로 제안합니다. `component_candidates`가 있으면 후보를 사용자에게 보여 주고(후보일 뿐 같은 부품이라고 단정하지 않음), 같은 부품이면 `ui-map register --note`, 다른 부품이면 원장 결정 ID를 `components.new_reasons`에 적습니다(`unmapped_candidate_exists`, `reference/planning.md`).
 3. `plan-validate`의 오류를 모두 고칩니다(AC·화면 중복·누락, 순환 의존, 순서, 참조). 경고는 판단해 고치거나 이유를 보고에 적습니다.
 4. 디자인 준비 수준이 **L2**(UX Spec 승인, 프리뷰 미승인)이고 화면 배치가 있으면 `design_not_ready` 오류가 납니다. 3단계의 waiver가 필요합니다. **L0/L1**이면 화면 배치는 계획할 수 없고, 화면 없는 DB/API 배치(`kind: non_ui`)만 가능하다고 설명합니다.
 
@@ -106,7 +107,7 @@ disable-model-invocation: true
 3. 작업을 `next_task` 순서대로 구현합니다.
    - 계획의 화면·AC·컴포넌트와 승인된 UX Spec(02 화면 상태·문구·권한)을 따릅니다. `scan`의 기존 컴포넌트를 먼저 재사용합니다.
    - **화면·컴포넌트 배치**(`reference/ui.md` §4): `[ui]` 프로젝트의 `kind = "ui"` 배치는 아래가 없으면 `batch-start`가 거부합니다(`ui_plan_required`). 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지).
-   - 계획의 신규 부품을 만들면 `ui-map register --source built --batch Bxx`로 등록합니다. 배치 제출 전에 `ui-map check --batch Bxx`, `token-check`, `token-audit --batch Bxx`를 실행해 결과를 보고합니다. 토큰 예외·감사 예외는 사유와 사용자 문장이 있어야 등록·변경·삭제합니다(`ui-map except`·`unexcept`). 예외가 바뀌면 그 기준으로 검증된 UI 배치는 다시 검사합니다.
+   - 계획의 신규 부품을 만들면 `ui-map register --source built --batch Bxx`로 등록합니다. 배치 제출 전에 `ui-map check --batch Bxx`, `token-check`, `token-audit --batch Bxx`를 실행해 결과를 보고합니다. `verify`도 대응표가 있으면 배치 범위 중복 부품을 차단하고, UI Plan의 재사용 부품을 코드가 쓰지 않으면 `planned_reuse_not_used`로 보고합니다(정적 참조는 렌더링 증거가 아님). 토큰 예외·감사 예외는 사유와 사용자 문장이 있어야 등록·변경·삭제합니다(`ui-map except`·`unexcept`). 예외가 바뀌면 그 기준으로 검증된 UI 배치는 다시 검사합니다.
    - **화면 상태 테스트는 상태 태그를 붙입니다**(`reference/ui.md` §5: `[SCR-001-ST2] …`). Must 화면의 정의된 상태는 E2가 필요합니다. 자동화하지 못한 확인(키보드·스크린리더 등)은 사용자가 직접 확인한 문장을 받아 `evidence-manual add`로 기록합니다(EM은 E2를 대신하지 않음). 브라우저 단계는 프로필의 `pb-ui` 단계로 실행합니다(§6). 도구 설치는 사용자 확인 후.
    - 명세에 없는 정책은 임의로 확정하지 않습니다(`reference/ledger.md`).
      - 되돌리기 쉬운 값이면 코드에 `TODO(POL): …` 임시값 표시를 남깁니다. 배치를 마칠 때 `ledger sync`로 원장에 넣습니다(비차단).

@@ -33,6 +33,14 @@ STATE_FILES = (WORKFLOW_STATE_REL, DESIGN_STATE_REL, ".ai-workflow/boilerplate.j
 ENGINE_RECORDS = (".ai-workflow/build.json", ".ai-workflow/build/", "docs/build/")
 EXPORT_RE = re.compile(r"\bexport\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Z][\w$]*)")
 CMP_RE = re.compile(r"CMP-\d{3}")
+# 컴포넌트처럼 보이는 내보내기: PascalCase 함수·클래스, 또는 함수·호출을 대입한 const(값·객체·문자열 상수는 제외)
+COMPONENT_DECL_RE = re.compile(r"\bexport\s+(?:default\s+)?(?:function\s+([A-Z][A-Za-z0-9]*)\s*[(<]|class\s+([A-Z][A-Za-z0-9]*)\b"
+                               r"|const\s+([A-Z][A-Za-z0-9]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\(|function\b|[A-Za-z_$][\w$.]*\())")
+# 화면·라우트·레이아웃 파일과 컴포넌트가 아닌 이름(오탐 줄이기). 이런 파일·이름은 component_outside_roots로 보지 않습니다.
+PAGE_DIRS = {"pages", "page", "routes", "route", "app", "screens", "views", "layouts"}
+PAGE_STEMS = {"page", "layout", "route", "index", "main", "app", "root"}
+NON_COMPONENT_SUFFIX = ("Page", "Screen", "Route", "Routes", "Layout", "View", "Provider", "Context", "Store", "Service", "Client", "Api",
+                        "Error", "Exception", "Schema", "Config", "Test", "Spec", "Mock", "Story", "Stories")
 HINTS = {
     "protected_path_changed": ("T3", "승인 문서·프리뷰를 경량 경로에서 고치지 않습니다. 기획 변경은 /product-start, 디자인 변경은 /product-design impact로 재진입(T3·T4)"),
     "theme_changed": ("T4", "테마(정본) 변경은 디자인 시스템 변경입니다. /product-design impact --design → Design Direction 재승인"),
@@ -45,6 +53,7 @@ HINTS = {
     "unknown_cmp_marker": ("T4", "승인된 04 문서에 없는 CMP입니다. 새 디자인 시스템 부품이면 /product-design 재진입"),
     "raw_value": ("T0", "직접 값 대신 승인된 토큰(CSS 변수 등)을 쓰거나, 프로젝트 허용 예외로 등록(ui-map except --audit-path)"),
     "possible_duplicate": ("T2", "대응된 부품과 이름이 같습니다. 재사용할 수 있는지 확인"),
+    "component_outside_roots": ("T2", "공통으로 쓸 부품이면 기존 대응 부품 재사용을 먼저 검토하고, 새 공통 부품이면 component_roots에 두고 사용자 확인 후 ui-map register. 이 화면 전용 부품이면 그대로 두어도 됩니다"),
 }
 
 
@@ -188,6 +197,19 @@ def collect(project: Path, mode: str, base_sha: str | None, paths: list[str] | N
 
 
 # ---------------------------------------------------------------- 판정
+def component_decls(rel: str, text: str) -> set[str]:
+    """컴포넌트 전용 폴더 밖 파일에서 새 컴포넌트로 보이는 내보내기 이름. 화면·라우트·레이아웃 파일, 상수·비컴포넌트 이름은 제외."""
+    parts = rel.lower().split("/")
+    if set(parts[:-1]) & PAGE_DIRS or Path(rel).stem.lower() in PAGE_STEMS or ".stories." in rel or ".story." in rel:
+        return set()
+    out = set()
+    for m in COMPONENT_DECL_RE.finditer(text):
+        name = next(g for g in m.groups() if g)
+        if not name.isupper() and not name.endswith(NON_COMPONENT_SUFFIX):
+            out.add(name)
+    return out
+
+
 def new_lines(base_text: str | None, text: str) -> set[int] | None:
     """base 대비 새로 생기거나 바뀐 줄 번호(1부터). base가 없으면 None(파일 전체가 새 것)."""
     if base_text is None:
@@ -314,6 +336,12 @@ def evaluate(project: Path, snap: dict, mode: str, base_sha: str | None, ctx: di
                 warn("unregistered_component", f"{rel}: 대응표에 없는 부품입니다(내보낸 이름: {', '.join(added or sorted(now_ex)) or '없음'})")
             else:
                 legacy.append({"check": "unregistered_component", "file": rel})
+        if files[rel]["kind"] == "ui" and ctx["roots"]:
+            decl = component_decls(rel, texts[rel])
+            fresh_decl = sorted(decl - (component_decls(rel, bt) if (mode == "changed" and bt) else set()))
+            if fresh_decl:
+                comp_out.setdefault("outside_roots", []).append({"file": rel, "exports": fresh_decl})
+                warn("component_outside_roots", f"{rel}: 컴포넌트 전용 폴더({', '.join(ctx['roots'])}) 밖에서 새 컴포넌트로 보이는 내보내기({', '.join(fresh_decl)})")
         uses = sorted(c for c, m in comps.items() if m.get("export") and m.get("path") != rel
                       and re.search(rf"(?<![\w$]){re.escape(m['export'])}(?![\w$])", texts[rel]))
         if uses:

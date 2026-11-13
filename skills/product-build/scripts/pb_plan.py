@@ -109,8 +109,9 @@ def suggest_groups(model: dict, screens: list[str], max_screens: int, min_screen
     return sorted(groups, key=lambda g: min(g["screens"]))
 
 
-def draft(model: dict, scope: dict, profile: dict, ui_allowed: bool = True) -> dict:
-    """ui_allowed=False(UX Spec 미승인)면 화면 묶음 없이 모든 AC를 화면 없는 배치(non_ui)에 둡니다."""
+def draft(model: dict, scope: dict, profile: dict, ui_allowed: bool = True, mapped: set[str] | frozenset = frozenset()) -> dict:
+    """ui_allowed=False(UX Spec 미승인)면 화면 묶음 없이 모든 AC를 화면 없는 배치(non_ui)에 둡니다.
+    mapped: UI 대응표에 이미 대응된 CMP(기존·라이브러리·만든 부품). 신규가 아니라 재사용으로 제안합니다."""
     b = profile["batching"]
     screens = sorted(set(scope["SCR_required"]) | set(scope["SCR_related_optional"])) if ui_allowed else []
     groups = suggest_groups(model, screens, int(b["max_screens"]), int(b["min_screens"])) if screens else []
@@ -120,7 +121,7 @@ def draft(model: dict, scope: dict, profile: dict, ui_allowed: bool = True) -> d
         for s in g["screens"]:
             for c in model["SCR"][s]["cmp"]:
                 cmp_groups[c].add(i)
-    shared = sorted(c for c, gs in cmp_groups.items() if len(gs) >= 2)
+    shared = sorted(c for c, gs in cmp_groups.items() if len(gs) >= 2 and c not in mapped)
     acs_of: dict[int, list[str]] = defaultdict(list)
     non_ui: list[str] = []
     for a in scope["AC_active"]:
@@ -157,7 +158,7 @@ def draft(model: dict, scope: dict, profile: dict, ui_allowed: bool = True) -> d
             tasks.append({"layer": "be", "title": "화면 없는 규칙", "refs": nui})
         tasks.append({"layer": "test", "title": "AC 테스트", "refs": acs})
         batches.append({"id": "", "title": g["key"], "goal": "", "kind": "ui", "screens": g["screens"], "acs": acs,
-                        "components": {"reuse": [c for c in cmps if c in shared], "new": [c for c in cmps if c not in shared]},
+                        "components": {"reuse": [c for c in cmps if c in shared or c in mapped], "new": [c for c in cmps if c not in shared and c not in mapped]},
                         "paths": {"allow": [], "shared": []},
                         "depends_on": ["B0"] if shared else [], "tasks": tasks, "risk_tags": [],
                         "done_criteria": ["프로필 검증 명령 통과", "배치 AC 증거 수준 충족"],

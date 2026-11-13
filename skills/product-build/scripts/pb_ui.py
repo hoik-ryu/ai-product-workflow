@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pb_core import (
     DD_FILE, DESIGN_STATE_REL, PLAN_JSON_REL, SCREENS_FILE, TRACE_FILE, UISYS_FILE, blocks_by_heading, block, digest, field_line,
-    is_protected, now, read_text, screen_info, sha_file, strip_fences, write_owned,
+    is_protected, now, read_text, screen_info, sha_file, strip_comments, strip_fences, write_owned,
 )
 from pb_exec import in_patterns
 from pb_scan import DEFAULT_EXCLUDE, MAX_FILE_BYTES, NON_SOURCE_TOP, TEXT_EXT, is_test_path
@@ -210,6 +210,45 @@ def plan_conflicts(umap: dict | None, plan: dict | None) -> list[str]:
             elif m.get("source") == "built" and m.get("built_by") != b["id"]:
                 errs.append(f"[cmp_already_mapped] {c}는 {m.get('built_by')}가 이미 만들었습니다({m.get('path')}). {b['id']}는 재사용해야 합니다")
     return errs
+
+
+NEW_REASON_TYPES = ("policy", "deviation")
+NEW_REASON_STATUSES = ("decided", "closed")
+
+
+def candidate_conflicts(project: Path, plan: dict | None, prof: dict, uprof: dict, umap: dict | None, ledger_items,
+                        started: set[str] | frozenset = frozenset()) -> tuple[list[str], list[str]]:
+    """계획이 새로 만든다고 한 CMP(components.new)에 대응표에 없는 기존 후보 파일(CMP 표지·이름 일치)이 있으면 차단합니다.
+    후보는 같은 부품이라는 확정이 아닙니다. 사용자가 같다고 확인하면 ui-map register → reuse, 다르다고 결정하면
+    결정된 원장 항목(policy·deviation)을 components.new_reasons에 적습니다(새 승인 게이트 없이 계획 승인에 포함).
+    started: 이미 시작·완료된 배치(계획 최초 승인 때 검사됨). 그 배치의 신규 CMP 파일은 그 배치가 만든 것이라 다시 검사하지 않습니다."""
+    news = [(b, c) for b in batches_by_id(plan).values() if b["id"] not in started for c in comp_list(b, "new")]
+    roots = uprof.get("component_roots") or prof["paths"].get("components") or []
+    if not news or not roots:
+        return [], []
+    found = {x["cmp"]: x["candidates"] for x in candidates(project, prof, uprof, umap)["unmapped"] if x["candidates"]}
+    if not found:
+        return [], []
+    items = {i["id"]: i for i in (ledger_items() if callable(ledger_items) else ledger_items or [])} \
+        if any(((b.get("components") or {}).get("new_reasons") or {}).get(c) for b, c in news if c in found) else {}
+    E, W = [], []
+    for b, c in news:
+        files = found.get(c)
+        if not files:
+            continue
+        desc = ", ".join(f"{f['path']}({f['why']})" for f in files)
+        reasons = (b.get("components") or {}).get("new_reasons")
+        reason = reasons.get(c) if isinstance(reasons, dict) else None
+        it = items.get(reason) if isinstance(reason, str) else None
+        if it and it.get("type") in NEW_REASON_TYPES and it.get("status") in NEW_REASON_STATUSES:
+            W.append(f"[new_despite_candidate] {b['id']}: {c}에 기존 후보({desc})가 있지만 원장 {reason}의 결정에 따라 새로 만듭니다")
+            continue
+        bad = (f" (components.new_reasons.{c} = {reason}: 결정된 policy·deviation 원장 항목이 아닙니다)" if reason else "")
+        E.append(f"[unmapped_candidate_exists] {b['id']}: {c}를 새로 만들려 하지만 대응표에 없는 기존 후보 파일이 있습니다: {desc}.{bad} "
+                 f"후보는 표지·이름으로 찾은 것이라 같은 부품인지는 사용자가 확인합니다. 같으면 사용자 확인 후 "
+                 f"ui-map register --cmp {c} --path <파일> --export <이름> --note '<사용자 문장>'으로 등록하고 components.reuse로 옮깁니다. "
+                 f"다른 부품이면 ledger add --type policy로 근거를 남기고 decide로 사용자 결정을 받은 뒤 components.new_reasons.{c}에 그 ID를 적습니다")
+    return E, W
 
 
 def map_problems(project: Path, umap: dict, plan: dict | None, st: dict | None, batch: str | None = None, exts=None) -> dict:
@@ -617,8 +656,99 @@ def build_brief(project: Path, st: dict, plan: dict, bid: str, prof: dict, uprof
         ],
         "sources": sources, "warnings": warnings,
     }
-    brief["digest"] = digest({k: v for k, v in brief.items() if k != "digest"})
+    brief["layout"] = layout_info(project, list(screens), approved)
+    brief["digest"] = brief_digest(brief)
     return brief
+
+
+# ---------------------------------------------------------------- 레이아웃·공통 패턴 전달(승인 문서 원문, 엔진은 해석·보완하지 않음)
+LAYOUT_TOKEN_GROUPS = {
+    "spacing": ("space", "spacing", "gap", "padding", "margin", "inset", "layout", "container", "grid", "gutter"),
+    "typography": ("font", "typography", "type", "line", "lineheight", "leading", "letter", "tracking"),
+    "breakpoint": ("breakpoint", "bp", "screen", "viewport", "media"),
+}
+LAYOUT_NOTE = ("승인된 02 '레이아웃'·04 '공통 패턴' 원문과 승인 토큰 중 간격·글자·브레이크포인트 토큰입니다. "
+               "엔진은 해석·보완하지 않습니다. 원문에 없는 레이아웃 규칙은 만들지 않고, 필요하면 원장(ledger)에 올립니다.")
+
+
+def brief_digest(brief: dict) -> str:
+    """Brief 내용 digest. layout(원문 전달)은 제외합니다: 원문 파일(02·04)의 해시가 sources에 있어 바뀌면 digest가 바뀌고,
+    기존 Brief·UI Plan 검증 기록의 digest도 그대로 유지됩니다. layout 자체의 무결성은 layout.digest로 확인합니다."""
+    return digest({k: v for k, v in brief.items() if k not in ("digest", "layout")})
+
+
+def brief_intact(brief: dict) -> bool:
+    """저장된 Brief가 엔진이 만든 그대로인지(digest·layout.digest). layout이 없는 이전 Brief도 인정합니다."""
+    if brief.get("digest") != brief_digest(brief):
+        return False
+    lay = brief.get("layout")
+    return lay is None or (isinstance(lay, dict) and lay.get("digest") == digest({k: v for k, v in lay.items() if k != "digest"}))
+
+
+def _drop_comments(text: str) -> str:
+    """HTML 주석 제거. 주석만 있던 줄은 줄째 지웁니다(원문 내용은 그대로)."""
+    return strip_comments(re.sub(r"^[ \t]*<!--.*?-->[ \t]*\n", "", text, flags=re.M | re.S))
+
+
+def screen_layouts(project: Path) -> dict[str, str]:
+    """02 문서 각 화면의 `### 레이아웃…` 절 원문(코드 펜스 포함, HTML 주석 제외). 비었거나 없는 화면은 넣지 않습니다."""
+    text = _drop_comments(read_text(project, SCREENS_FILE))
+    out: dict[str, str] = {}
+    cur, in_layout, fence, buf = None, False, False, []
+
+    def flush():
+        body = "\n".join(buf).strip("\n")
+        if cur and in_layout and body.strip():
+            out[cur] = body
+        buf.clear()
+    for line in text.splitlines():
+        is_fence = line.lstrip().startswith("```")
+        if not fence and not is_fence and re.match(r"^#{1,4}\s", line):
+            flush()
+            if re.match(r"^#{1,2}\s", line):
+                m = re.match(r"^##\s+(SCR-\d{3})\b", line)
+                cur, in_layout = (m.group(1) if m else None), False
+            else:
+                in_layout = cur is not None and "레이아웃" in line
+            continue
+        if is_fence:
+            fence = not fence
+        if in_layout:
+            buf.append(line)
+    flush()
+    return out
+
+
+def common_patterns(project: Path) -> str:
+    """04 문서 `## …공통 패턴` 절 원문(HTML 주석 제외). 없으면 빈 문자열."""
+    text = _drop_comments(read_text(project, UISYS_FILE))
+    m = re.search(r"^##\s+(?:\d+\.\s*)?공통 패턴[^\n]*\n", text, re.M)
+    if not m:
+        return ""
+    nxt = re.compile(r"^##\s", re.M).search(text, m.end())
+    return text[m.end(): nxt.start() if nxt else len(text)].strip()
+
+
+def layout_tokens(approved: dict[str, str]) -> dict[str, dict[str, str]]:
+    """승인 토큰 중 이름의 첫 부분으로 간격·글자·브레이크포인트를 고릅니다(값은 승인값 그대로)."""
+    out = {g: {} for g in LAYOUT_TOKEN_GROUPS}
+    for name, val in sorted(approved.items()):
+        head = re.split(r"[.\-_/]", name.lower(), maxsplit=1)[0]
+        for g, keys in LAYOUT_TOKEN_GROUPS.items():
+            if head in keys:
+                out[g][name] = val
+                break
+    return out
+
+
+def layout_info(project: Path, screens: list[str], approved: dict[str, str]) -> dict:
+    lay = screen_layouts(project)
+    out = {"note": LAYOUT_NOTE, "screens": {s: lay[s] for s in screens if s in lay},
+           "missing": [s for s in screens if s not in lay],
+           "patterns": {"source": UISYS_FILE, "text": common_patterns(project)},
+           "tokens": layout_tokens(approved)}
+    out["digest"] = digest(out)
+    return out
 
 
 def plan_skeleton(brief: dict) -> dict:
@@ -677,8 +807,56 @@ def _preview_refs(obj, where="") -> list[str]:
     return hits
 
 
+def planned_reuse_refs(project: Path, uplan: dict | None, umap: dict | None, files: list[str]) -> dict:
+    """UI Plan 트리에서 대응표 부품(cmp, local 아님)으로 재사용하기로 한 CMP가 배치 범위 코드에서 참조되는지(정적).
+    참조 = 대응 파일 경로를 import(`import_re`, component_inventory와 같은 규칙) 또는 내보낸 이름을 식별자로 사용(주석 줄 제외).
+    참조는 렌더링의 증거가 아닙니다(조건부 렌더·다른 컴포넌트 경유 여부는 알 수 없음). 화면 상태·브라우저 증거가 렌더링을 다룹니다."""
+    from pb_scan import import_re  # 지역 import(순환 방지)
+    comps = (umap or {}).get("components") or {}
+    planned: dict[str, list[str]] = {}
+    for s, sp in ((uplan or {}).get("screens") or {}).items():
+        if not isinstance(sp, dict):
+            continue
+        for _w, n in _walk(sp.get("tree") if isinstance(sp.get("tree"), list) else []):
+            if isinstance(n, dict) and n.get("cmp") in comps and not n.get("local"):
+                planned.setdefault(n["cmp"], []).append(s)
+    texts = {}
+    for rel in files:
+        try:
+            texts[rel] = "\n".join(x for x in (project / rel).read_text(encoding="utf-8", errors="replace").splitlines()
+                                   if not x.strip().startswith(("//", "/*", "*", "#", "<!--")))
+        except OSError:
+            continue
+    out = {"checked": sorted(planned), "used": {}, "unused": [], "files": len(texts),
+           "note": "정적 참조(import·식별자)만 봅니다. 실제로 렌더링되는지는 화면 상태 테스트·브라우저 증거로 확인합니다."}
+    for c in sorted(planned):
+        m = comps[c]
+        exp, path = m.get("export") or "", m.get("path") or ""
+        rx_imp = import_re(Path(path).stem) if path else (re.compile(rf"""from\s+['"]{re.escape(m.get('package', '').split('@')[0])}""") if m.get("package") else None)
+        rx_id = re.compile(rf"(?<![\w$]){re.escape(exp)}(?![\w$])") if exp else None
+        hits = []
+        for rel, t in texts.items():
+            if rel == path:
+                continue
+            how = "import" if rx_imp and rx_imp.search(t) else "identifier" if rx_id and rx_id.search(t) else None
+            if how:
+                hits.append({"file": rel, "how": how})
+        if hits:
+            out["used"][c] = hits
+        else:
+            out["unused"].append({"cmp": c, "screens": sorted(set(planned[c])), "path": path or m.get("package"), "export": exp})
+    return out
+
+
+def similar_mapped(part: str, mapped_exports: dict) -> list[str]:
+    """로컬 부품 이름 안에 대응된 부품 이름이 단어 단위(대문자 경계)로 들어 있는지. 예: ReservationCard ⊃ Card. 판정이 아니라 경고 후보입니다."""
+    return sorted(e for e in mapped_exports if isinstance(e, str) and len(e) >= 3 and e != part and e[:1].isupper()
+                  and re.search(rf"{re.escape(e)}(?![a-z0-9])", part or ""))
+
+
 def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bid: str, umap: dict | None, uprof: dict,
-                     ledger_ids: set[str]) -> dict:
+                     ledger_ids: set[str] | dict) -> dict:
+    """ledger_ids: 원장 ID 집합 또는 {ID: 항목}. cmp_exclusions의 결정 상태 확인에는 항목이 필요합니다."""
     E, W = [], []
 
     def err(code, msg):
@@ -737,6 +915,7 @@ def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bi
         if not isinstance(tree, list) or not tree:
             err("tree_missing", f"{s}: 컴포넌트 트리(tree)가 비어 있습니다")
             tree = []
+        screen_cmps: set[str] = set()
         for where, n in _walk(tree, f"{s}.tree"):
             if not isinstance(n, dict) or not n.get("part"):
                 err("tree_format", f"{where}: 각 노드에는 part(코드 부품 이름)가 필요합니다")
@@ -744,6 +923,7 @@ def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bi
             c = n.get("cmp")
             if c:
                 used_cmps.add(c)
+                screen_cmps.add(c)
                 if c not in cmps04:
                     err("unknown_cmp", f"{where}: {c}는 승인된 04 문서에 없습니다")
                 elif c in comps_map:
@@ -756,10 +936,26 @@ def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bi
                     err("cmp_unplanned", f"{where}: {c}는 대응표에 없고 이 배치·선행 배치의 신규 목록(components.new)에도 없습니다(계획 수정 필요)")
             elif n["part"] in mapped_exports:
                 err("duplicate_of_mapped", f"{where}: 로컬 부품 {n['part']}이 대응된 {mapped_exports[n['part']]}과 이름이 같습니다(재사용하거나 이름을 구분하세요)")
+            else:
+                sim = similar_mapped(n["part"], mapped_exports)
+                if sim:
+                    warn("similar_to_mapped", f"{where}: 로컬 부품 {n['part']}의 이름에 대응된 부품 이름이 들어 있습니다({', '.join(f'{x} {mapped_exports[x]}' for x in sim)}). "
+                                              "같은 부품이라는 뜻은 아닙니다. 대응된 부품을 재사용(cmp 지정)할 수 있는지 확인하세요")
             f = n.get("file")
             if f and (n.get("local") or (c and bcomps.get(c, {}).get("role") == "new_here")):
                 if bad_path(f) or not in_patterns(f, allow):
                     err("out_of_scope_file", f"{where}: {f}는 배치 paths.allow/shared 밖입니다")
+        # 02가 이 화면에 지정한 CMP는 트리에 있어야 합니다. 의도적 제외는 결정된 원장 항목(cmp_exclusions)으로만.
+        excl = sp.get("cmp_exclusions") if isinstance(sp.get("cmp_exclusions"), dict) else {}
+        for c in sorted(set(sb.get("components") or []) - screen_cmps):
+            lid = excl.get(c)
+            it = ledger_ids.get(lid) if isinstance(ledger_ids, dict) and isinstance(lid, str) else None
+            if it and it.get("type") in NEW_REASON_TYPES and it.get("status") in NEW_REASON_STATUSES:
+                warn("screen_cmp_excluded", f"{s}: 02가 지정한 {c}를 원장 {lid}의 결정에 따라 트리에서 뺐습니다")
+            else:
+                bad = f" (cmp_exclusions.{c} = {lid}: 결정된 policy·deviation 원장 항목이 아닙니다)" if lid else ""
+                err("screen_cmp_unused", f"{s}: 02 명세가 이 화면에 지정한 {c}가 컴포넌트 트리(tree)에 없습니다{bad}. "
+                                         f"트리 노드에 cmp: {c}로 넣거나, 의도적으로 빼려면 원장 결정(ledger add → decide) ID를 screens.{s}.cmp_exclusions.{c}에 적으세요")
         # 상호작용
         ints = sp.get("interactions") if isinstance(sp.get("interactions"), list) else []
         spec_actions = [a["action"] for a in sb["actions"]]

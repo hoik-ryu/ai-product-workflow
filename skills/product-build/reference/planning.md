@@ -58,7 +58,7 @@
     {
       "id": "B1", "title": "가입·승인", "goal": "…", "kind": "ui | non_ui | foundation",
       "screens": ["SCR-001"], "touches": ["SCR-201"], "stories": ["US-001"], "acs": ["AC-001"],
-      "components": { "reuse": ["CMP-001"], "new": ["CMP-024"] },
+      "components": { "reuse": ["CMP-001"], "new": ["CMP-024"], "new_reasons": { "CMP-024": "POL-003" } },
       "depends_on": ["B0"],
       "tasks": [ { "id": "B1-T1", "layer": "fe | be | db | api | test | infra | docs", "title": "…",
                    "refs": ["SCR-001", "AC-001"], "depends_on": ["B0-T1"] } ],
@@ -69,6 +69,13 @@
   "deferred": [ { "id": "AC-0xx 또는 US-0xx 또는 SCR-0xx", "reason": "…" } ]
 }
 ```
+
+**기존 부품 재사용(계획 단계)**
+- `scope --draft`는 UI 대응표(`docs/build/ui-map.json`)에 이미 대응된 CMP를 `components.new`가 아니라 `reuse`로 제안합니다(`reused_from_ui_map`). 초안이 신규로 제안한 CMP에 대응표 밖 기존 후보 파일이 있으면 `component_candidates`로 알립니다.
+- `components.new`의 CMP에 대응표 밖 기존 후보 파일(부품 경로 안 파일의 `CMP-xxx` 표지 또는 파일 이름 = CMP 이름)이 있으면 `plan-validate`·`submit`·`approve`가 `unmapped_candidate_exists`로 막습니다. 부품 경로(`[ui].component_roots` 또는 `paths.components`)가 없는 프로젝트는 검사하지 않습니다. 이미 시작·완료된 배치의 신규 CMP는 다시 검사하지 않습니다(계획 최초 승인 때 검사했고, 후보 파일은 그 배치가 만든 것).
+- 후보는 같은 부품이라는 확정이 아닙니다. 사용자에게 후보를 보여 주고 묻습니다.
+  - 같은 부품: 사용자 확인 문장으로 `ui-map register --cmp --path --export --note` → `components.reuse`로 옮깁니다.
+  - 다른 부품(새로 만들어야 함): `ledger add --type policy`로 근거를 남기고 `decide --confirm --note '<사용자 문장>'`으로 결정받은 뒤 `components.new_reasons`에 `{CMP: 원장 ID}`를 적습니다. 결정(`decided`·`closed`)된 policy·deviation 항목만 인정하고, 계획 승인에 함께 포함됩니다(별도 승인 단계 없음). 결과에 경고 `new_despite_candidate`로 남습니다.
 
 - 배치 목록 순서가 **실행 순서**입니다.
 - 화면은 한 배치만 **소유**(`screens`)합니다. 다른 배치가 고치면 `touches`에 둡니다.

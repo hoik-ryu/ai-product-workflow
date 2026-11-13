@@ -43,10 +43,17 @@
 | 단계 | 검사 | 코드 |
 |---|---|---|
 | 계획(`plan-validate`·`submit`·`approve`) | 대응표의 기존·라이브러리 부품, 또는 다른 배치가 만든 부품을 `components.new`에 넣음 | `cmp_already_mapped` (대응표가 있을 때만) |
+| 계획 | `components.new`의 CMP에 대응표 밖 기존 후보 파일(표지·이름 일치)이 있음. 결정된 원장 근거(`components.new_reasons`)가 있으면 경고 | `unmapped_candidate_exists` / 경고 `new_despite_candidate` (부품 경로가 있을 때만, `reference/planning.md`) |
 | 계획 | 같은 CMP를 두 배치가 신규 생성 | `cmp_new_duplicate`(M2) |
 | 배치 완료 후(`ui-map check`) | 끝난 배치의 `components.new`가 대응표에 없음 | `new_not_registered` |
 | 코드(`ui-map check --batch`) | 배치 범위 파일이 이미 대응된 CMP의 표지를 가짐 / 대응된 부품과 같은 이름 파일 | `duplicate_component` / 경고 `possible_duplicate` |
 | UI Plan | 대응된 CMP를 로컬로 새로 만듦, 다른 이름 사용, 대응된 이름과 같은 로컬 부품 | `cmp_mapped_rebuilt`, `cmp_part_mismatch`, `duplicate_of_mapped` |
+| UI Plan | 02가 화면에 지정한 CMP가 그 화면 트리에 없음. 의도적 제외는 결정된 원장 항목(`screens.<SCR>.cmp_exclusions`)만 | `screen_cmp_unused` / 경고 `screen_cmp_excluded` |
+| UI Plan | 로컬 부품 이름에 대응 부품 이름이 대문자 경계로 들어 있음(예: `ConfirmButton` ⊃ `Button`). 같은 부품이라는 확정이 아니며 자동 수정하지 않음 | 경고 `similar_to_mapped` |
+| verify(UI 배치, 대응표가 있을 때) | 배치 범위 중복 부품, 이 배치가 쓰는 CMP의 대응표 오류(`map_problems --batch`) | 차단 `[ui_map] …` (관계없는 대응표 문제는 경고) |
+| verify | UI Plan에서 대응 부품으로 재사용하기로 한 CMP를 배치 범위 코드가 import(대응 파일 경로·라이브러리 패키지)하거나 이름으로 쓰지 않음(주석 제외) | 경고 `planned_reuse_not_used` |
+
+정적 대조의 한계: import·식별자 참조는 **렌더링의 증거가 아닙니다**(조건부 렌더, 다른 부품을 거친 사용, 다시 내보내기·별칭은 판단하지 못함). 그래서 `planned_reuse_not_used`는 보고만 하고 verify를 막지 않습니다. 실제 렌더링은 화면 상태 테스트(E2)·브라우저 증거·사용자 UI 검토가 다룹니다.
 
 ## 3. 토큰 대응(`token-check`)과 직접 값 감사(`token-audit`)
 
@@ -61,6 +68,8 @@
 ## 4. UI Brief(엔진)와 UI Plan(Claude)
 
 1. `ui-brief --batch Bxx`(승인된 계획, 디자인 L2·L3, 입력 변경 없음): 배치 화면의 02 블록(목적·역할·플랫폼·경로·상태 표·행동·입력·정보·컴포넌트), 05의 AC→상태, 04 CMP 필드, 07의 **승인된** VD, 승인 토큰, 대응표, 배치 작업·선행 배치의 API 작업, 계약 파일, test_plan을 묶습니다. Must 화면의 정의된 상태는 `required: true`입니다.
+   - `layout`: 02 각 화면의 `### 레이아웃…` 절 원문(코드 펜스 그림 포함, HTML 주석 제외, 없는 화면은 `missing`), 04 `## …공통 패턴` 절 원문, 승인 토큰 중 이름 첫 부분이 간격(space·gap·padding·margin…)·글자(font·line·letter…)·브레이크포인트(breakpoint·bp·screen…)인 토큰(승인값 그대로). 엔진은 해석·보완하지 않습니다. 원문에 없는 레이아웃 규칙은 만들지 않고 필요하면 원장에 올립니다.
+   - `layout`은 Brief `digest`에서 제외합니다(02·04 파일 해시가 `sources`에 있어 원문이 바뀌면 digest가 바뀜). 자체 무결성은 `layout.digest`로 확인하며, `layout`이 없는 이전 Brief도 그대로 인정합니다.
 2. UI Plan이 없으면 결과의 `skeleton`을 `.ai-workflow/build/ui/Bxx/plan.json`으로 저장해 채웁니다.
 
 ```json
@@ -74,6 +83,8 @@
       "visual_ref": "design-preview/... (시각 참고만, 선택)" } },
   "components": { "CMP-001": { "action": "reuse|new", "part": "Button" } } }
 ```
+
+- 02가 화면에 지정한 CMP는 그 화면 `tree`에 `cmp`로 있어야 합니다. 의도적으로 빼려면 `ledger add --type policy` → `decide`로 사용자 결정을 받고 `"cmp_exclusions": { "CMP-002": "POL-001" }`를 그 화면에 적습니다(결정된 policy·deviation만 인정).
 
 3. `ui-plan-validate --batch Bxx`가 통과한 뒤 구현합니다.
 
@@ -224,6 +235,7 @@ T0~T2 변경(SKILL.md "일상 개발")에서 배치·구현 계획·커밋 없�
 | 대상 | 대응표에 없는 부품(component_roots 안 새 파일·새 export) `unregistered_component` | 경고(`--strict` 실패) |
 | 대상 | 이미 대응된 CMP 표지를 다른 파일에 구현 `duplicate_component` | 오류 |
 | 대상 | 대응된 부품과 같은 이름 `possible_duplicate`, 04에 없는 CMP 표지 `unknown_cmp_marker`(T4) | 경고 |
+| 대상 | 부품 폴더(component_roots) 밖에서 새로 내보낸 컴포넌트로 보이는 선언 `component_outside_roots`(PascalCase 함수·클래스, 함수·호출을 대입한 const). 페이지·라우트·레이아웃 폴더와 `page`·`index` 등 파일, `Page`·`Screen`·`Context`·`Provider` 등 접미사, 상수·객체·소문자 함수, 테스트·스토리, base에 이미 있던 선언은 제외. 부품 폴더가 정해지지 않은 프로젝트는 검사하지 않음 | 경고 |
 | 정보 | 대상 파일이 쓰는 대응 부품(`components.reuse`) | — |
 
 **레거시 분리**(기본 모드): 직접 값은 base 대비 새로 생기거나 바뀐 줄의 것만, 표지·중복·미등록 부품은 base에 없던 것만 이번 변경의 위반입니다. base에 이미 있던 위반은 `legacy`로 따로 보고하고 실패시키지 않습니다. 전역 검사는 레거시 구분 없이 항상 적용합니다. `--path`·`--all`은 레거시 구분 없이 모두 현재 위반으로 봅니다.
