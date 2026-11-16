@@ -13,7 +13,7 @@
 | UI Plan 검증 기록 | `.ai-workflow/build/ui/<배치>/validation.json` | 엔진(`ui-plan-validate`) |
 
 - 화면별 문서를 새로 만들지 않습니다. 사람용 요약은 기존 구현 계획 문서와 대화 보고로 충분합니다.
-- `design-preview/`는 **시각 참고만** 합니다. 대응표·토큰 출력·UI Plan(시각 참고 필드 `visual_ref` 제외)에 프리뷰 경로가 있으면 거부합니다.
+- `design-preview/`는 **시각 참고만** 합니다. 대응표·토큰 출력·UI Plan(시각 참고 필드 `visual_ref` 제외)에 프리뷰 경로가 있으면 거부합니다. 단 UI Plan의 자유 서술 필드(`notes`·`description`·`reason`·`trigger`·`result` 등)에서 경로를 **언급**만 한 것은 경고(`preview_mentioned`)이고, 그 서술이 재사용을 **지시**하면(import·require·셸 복사 명령, 부정문이 아닌 '복사·이식·재사용·copy·port' 등) 거부합니다. 경로·참조 필드와 알 수 없는 필드는 언제나 거부합니다.
 
 ## 2. UI 대응표(CMP ↔ 코드 부품)
 
@@ -39,6 +39,11 @@
 2. B0 실행 중 부품을 만든 뒤 `ui-map register --cmp CMP-001 --source built --batch B0 --path <파일> --export <이름>`(계획의 신규 목록·배치 범위 안만 허용).
 3. 토큰 출력 파일은 `token-check`의 `expected_css`로 만들고 `ui-map tokens --file ... --note`로 지정합니다.
 
+**부품 구현 표지**(ui-map check·ui-guard·`scan`·`ui-map candidates` 공통, 파일 앞 4000자, 프레임워크 무관)
+- 머리 선언: 파일 머리(지시문·import·주석만 있는 앞부분)의 주석 줄이 `CMP-xxx`로 시작(`// CMP-001 Button`, `/* CMP-001 … */`, `<!-- CMP-001 -->`). 한 파일에 여러 줄이면 여러 CMP. 단 export가 있는데 부품처럼 보이는 export(PascalCase·default)가 없는 파일(보조 훅·유틸·상수)의 머리 주석은 참조입니다.
+- 렌더 표지: `data-cmp="CMP-xxx"`. 그 CMP의 대응 부품을 import해 감싸는 사용처에서는 중복으로 보지 않습니다.
+- 그 밖의 언급(본문 주석·문장·사용처의 `CMP-xxx`)은 **참조**이며 구현 소유권·후보의 근거가 아닙니다. 이름 일치 경고(`possible_duplicate`)와 UI Plan 검사(`cmp_mapped_rebuilt`·`duplicate_of_mapped`)는 그대로 2차 방어입니다.
+
 **중복 생성 방지**
 | 단계 | 검사 | 코드 |
 |---|---|---|
@@ -46,7 +51,7 @@
 | 계획 | `components.new`의 CMP에 대응표 밖 기존 후보 파일(표지·이름 일치)이 있음. 결정된 원장 근거(`components.new_reasons`)가 있으면 경고 | `unmapped_candidate_exists` / 경고 `new_despite_candidate` (부품 경로가 있을 때만, `reference/planning.md`) |
 | 계획 | 같은 CMP를 두 배치가 신규 생성 | `cmp_new_duplicate`(M2) |
 | 배치 완료 후(`ui-map check`) | 끝난 배치의 `components.new`가 대응표에 없음 | `new_not_registered` |
-| 코드(`ui-map check --batch`) | 배치 범위 파일이 이미 대응된 CMP의 표지를 가짐 / 대응된 부품과 같은 이름 파일 | `duplicate_component` / 경고 `possible_duplicate` |
+| 코드(`ui-map check --batch`) | 배치 범위 파일이 이미 대응된 CMP의 구현 표지(머리 선언·직접 렌더한 `data-cmp`)를 가짐 / 대응된 부품과 같은 이름 파일 | `duplicate_component` / 경고 `possible_duplicate` |
 | UI Plan | 대응된 CMP를 로컬로 새로 만듦, 다른 이름 사용, 대응된 이름과 같은 로컬 부품 | `cmp_mapped_rebuilt`, `cmp_part_mismatch`, `duplicate_of_mapped` |
 | UI Plan | 02가 화면에 지정한 CMP가 그 화면 트리에 없음. 의도적 제외는 결정된 원장 항목(`screens.<SCR>.cmp_exclusions`)만 | `screen_cmp_unused` / 경고 `screen_cmp_excluded` |
 | UI Plan | 로컬 부품 이름에 대응 부품 이름이 대문자 경계로 들어 있음(예: `ConfirmButton` ⊃ `Button`). 같은 부품이라는 확정이 아니며 자동 수정하지 않음 | 경고 `similar_to_mapped` |
@@ -100,7 +105,39 @@
 | `data_format`·`data_contract_missing`·`data_task_unknown` | 데이터 출처, API·Mock 계약 식별자, 관련 없는 작업 |
 | `ac_unlinked`·`ac_not_in_batch`·`ac_state_unknown` | 화면에 연결된 AC 누락, 배치 밖 AC, 없는 상태 |
 
-경고: `contract_not_found`(계약 파일에서 못 찾음), `ac_no_test_plan`, `new_unused`.
+경고: `contract_not_found`(계약 파일에서 못 찾음), `ac_no_test_plan`, `new_unused`, `preview_mentioned`(자유 서술의 프리뷰 경로 언급), `no_screen_plan`(UI 배치인데 소유·touches 화면이 모두 없음).
+
+### 4.1 touches 화면(소유하지 않지만 이 배치가 바꾸는 화면)
+
+화면 소유권(한 화면 = 한 배치의 `screens`)은 그대로입니다. 공통 부품·레이아웃 정비처럼 다른 배치의 화면을 바꾸는 배치는 그 화면을 `touches`에 두고, 아래 규칙으로 계획·증거를 냅니다. 설계와 정책 판단: `docs/roadmap/m3-p1-touched-screens-design.md`.
+
+- **Brief `touched`**(touches가 있는 배치만): 화면별 소유 배치·상태·CMP(`affected_via` = 이 배치가 다루는 CMP 중 그 화면에 있는 것, `referenced` = 다루지 않는 CMP)·이 배치 AC 중 그 화면 상태를 가리키는 것·VD(`via: screen` 화면 직접 관련, `via: CMP-xxx` 부품 경유)·02 레이아웃 원문, 그리고 배치 CMP에 연결된 VD(`component_vd`). 전역 VD(`visual_decisions_global`)는 그대로입니다. `touched`는 `layout`처럼 Brief digest에서 빼고 자체 digest로 확인합니다(기존 Brief·UI Plan 검증을 낡게 하지 않음).
+- **UI Plan `touched`**(skeleton에 들어 있음):
+```json
+"touched": {
+  "SCR-001": { "changes": "<무엇이 바뀌는지>", "via": ["CMP-001"],
+               "states": { "SCR-001-ST3": { "how": "test", "ref": "..." } }, "acs": { "AC-002": { "states": ["SCR-001-ST3"] } } },
+  "SCR-002": { "changes": "...", "via": ["CMP-001"], "covered_by": "SCR-001" },
+  "SCR-009": { "changes": "...", "via": ["layout"], "exempt": "POL-002" } }
+```
+  `via`: 이 배치의 CMP, `layout`(공통 레이아웃·패턴), `screen`(그 화면 고유 코드).
+- **대표 화면 규칙**: 화면마다 증거를 강제하지 않고 변경 경로(via)마다 대표 화면에서 증거를 냅니다.
+  - 대표: `states`에 정의된 상태 1개 이상(how·ref). 이 상태들이 증거 대상입니다.
+  - 위임: `covered_by` = 같은 배치의 대표 touches 화면 또는 소유 화면. `via`가 하나 이상 겹쳐야 합니다(소유 화면은 그 화면 CMP 또는 `layout`).
+  - 예외(공식 절차): `exempt` = 결정된 원장 항목(`ledger add --type policy|deviation` → `decide`). 검토 묶음에 표시됩니다.
+  - 위임·예외 불가(대표여야 함): `via`에 `screen`이 있음, 또는 이 배치 AC가 그 화면 상태를 가리킴(그 AC를 `acs`로 대표 상태에 연결).
+
+| 오류 코드 | 의미 |
+|---|---|
+| `touched_missing`·`touched_unknown` | touches 화면 계획 누락 / touches가 아닌 화면 |
+| `touched_changes`·`touched_via` | 변경 내용 없음 / 변경 경로 없음·배치 밖 |
+| `touched_states`·`touched_state_unknown`·`touched_state_how` | 대표·위임·예외 중 하나도 없음 / 없는 상태 / 재현 방법 없음 |
+| `touched_covered_by`·`touched_must_represent` | 위임 대상이 대표·소유 화면이 아니거나 겹치는 via 없음 / 위임·예외할 수 없는 화면 |
+| `touched_ac_unlinked`·`touched_ac_state`·`touched_exempt_invalid` | 화면을 가리키는 AC 미연결 / 대표 상태 밖 연결 / 결정되지 않은 원장 예외 |
+
+경고: `touched_exempted`, `touched_cover_ignored`, `no_representative`(소유 화면 없이 touches가 모두 예외), `touched_plan_legacy`(아래 호환).
+
+- **호환**: 이미 시작된 배치의 UI Plan에 `touched`가 없으면 위 오류를 경고(`touched_plan_legacy`)로만 보고합니다. 아직 시작하지 않은 touches 배치는 검증 기록에 규칙 버전(`rules: touched-v1`)이 있어야 `batch-start`할 수 있습니다(`ui_plan_revalidate`). 소유 화면만 있는 배치는 이전과 같습니다.
 
 ## 5. 화면 상태 증거(M3.3)
 
@@ -112,7 +149,8 @@ UI Brief를 만든 배치(`.ai-workflow/build/ui/Bxx/brief.json`)만 대상입�
 - 목표: Must 화면의 정의된 상태(Brief `required: true`)는 **E2 필수**, 나머지는 경고. 필수 상태가 E2가 아니면 verify가 실패합니다.
 - 기록: 상태마다 증거의 출처(`test`·`browser`·EM ID), 단계, 케이스, 실행 ID·시각, 코드 버전(`code_tree`), 결과. AC ↔ 상태 연결(`ac_links`: 05의 AC→상태 + UI Plan `acs`)과 "AC는 통과했지만 연결 상태 증거 없음" 경고.
 - verify가 함께 확인하는 것: UI Brief가 현재 입력과 같은지(`brief_stale`), UI Plan이 현재 Brief로 검증됐는지(`ui_plan_not_validated`), `token-check`(불일치·누락 차단, 예외는 사유와 함께 기록), `token-audit`(프로필 mode대로).
-- 무효화: 화면별 입력 기준(02 화면 블록·연결된 05 AC 행·관련 VD·화면 CMP의 04 내용과 대응·UI Plan의 그 화면) + 토큰 기준(승인 토큰·출력 설정·예외) + UI Plan 컴포넌트 목록. 바뀌면 그 배치는 stale이 되고 `ui-evidence`가 영향받은 화면·상태를 보여 줍니다. 승인 문서 자체가 바뀌면 M2 규칙대로 계획 전체가 outdated입니다.
+- touches 대표 상태(§4.1): 목표는 **E2 또는 EM**(`scope: touched`)입니다. 미충족은 verify를 실패시키지 않고 이유와 함께 최종 UI 승인을 막습니다(`touched_evidence`, 계획이 없으면 `touched_unplanned`). 브라우저 결과와 EM은 touches 화면 상태도 받습니다. AC 연결에는 touches 화면 상태도 들어갑니다.
+- 무효화: 화면별 입력 기준(02 화면 블록·연결된 05 AC 행·관련 VD·화면 CMP의 04 내용과 대응·UI Plan의 그 화면) + touches 화면 입력 기준(같은 항목 + UI Plan `touched`의 그 화면, 이 판정 이후의 검증 기록만) + 토큰 기준(승인 토큰·출력 설정·예외) + UI Plan 컴포넌트 목록. 바뀌면 그 배치는 stale이 되고 `ui-evidence`가 영향받은 화면·상태를 보여 줍니다. 승인 문서 자체가 바뀌면 M2 규칙대로 계획 전체가 outdated입니다.
 
 ### 수동 증거(EM)
 ```
@@ -175,7 +213,9 @@ report = { format = "pb-ui", file = "ui.json" }   # 실행별 폴더($PB_REPORT_
 ### 검토 묶음(`ui-review --batch Bxx`)
 화면별 상태 증거(출처: test·browser·EM)·브라우저 결과(뷰포트·차단·경고·스크린샷)·연결 AC 판정·토큰 검사(검증 때와 지금)·컴포넌트 대응·수동 증거 상태·수정 요청과 **승인 차단 항목**을 한 묶음으로 보여 주고 `.ai-workflow/build/ui/Bxx/review.json`에 남깁니다. 묶음 ID(`review_id`)는 내용 digest입니다.
 
-승인 차단 항목: verified가 아님, 증거 stale(코드·UI Plan·화면 입력·토큰 기준·토큰 출력 파일), `browser_pending`, 필수 상태 E2 미충족, UI Plan 미검증, 지금 기준 토큰 불일치, stale 수동 증거, 해결되지 않은 수정 요청.
+승인 차단 항목: verified가 아님, 증거 stale(코드·UI Plan·화면 입력·토큰 기준·토큰 출력 파일), `browser_pending`, 필수 상태 E2 미충족, touches 대표 상태 증거 없음(`touched_evidence`·`touched_unplanned`), UI Plan 미검증, 지금 기준 토큰 불일치, stale 수동 증거, 해결되지 않은 수정 요청.
+
+경고: `evidence_empty`(화면 증거 0건 — 상태 증거·브라우저 결과·수동 확인 모두 없음), `touched_not_evaluated`(touches 판정 이전 엔진으로 검증된 배치. 차단하지 않으며 다시 verify하면 판정). 묶음에는 touches 화면(대표·위임·예외)이 함께 표시됩니다.
 
 ### 최종 UI 승인
 ```

@@ -63,7 +63,7 @@ disable-model-invocation: true
 
 ## 1단계 — 초기화
 
-1. `init`: `build.json`, `docs/build/build-profile.toml`(탐지한 경로·검증 명령), `.ai-workflow/build/.gitignore`(증거 원본 로그 제외)를 만듭니다. 기존 파일은 덮어쓰지 않습니다.
+1. `init`: `build.json`, `docs/build/build-profile.toml`(탐지한 경로·검증 명령), `.ai-workflow/build/.gitignore`(실행 산출물 제외: `evidence/`·`*.log`·`runs/`·`lock.json`, 실행 시와 같은 목록)를 만듭니다. 기존 파일은 덮어쓰지 않습니다(`.gitignore`가 이미 있으면 사용자 규칙을 그대로 두고 빠진 줄만 덧붙임).
 2. `scan` 결과(스택, 검증 명령 후보, 컴포넌트, ID 언급 수)를 짧게 보여 주고, 프로필의 경로·검증 명령·`order_strategy`가 맞는지 확인을 받습니다. 사용자가 고치라고 하면 프로필만 고칩니다.
 3. 화면이 있는 프로젝트면 `reference/ui.md` §2를 따릅니다.
    - 기존 부품이 있으면 `ui-map candidates`의 후보를 보여 주고, 사용자가 확인한 것만 `ui-map register --note`로 등록합니다. 기존 토큰 파일이 있으면 `ui-map tokens --file --note`.
@@ -106,7 +106,7 @@ disable-model-invocation: true
    - `branch_recommendation`이 있으면 한 줄로 알립니다(브랜치를 만들지 않음).
 3. 작업을 `next_task` 순서대로 구현합니다.
    - 계획의 화면·AC·컴포넌트와 승인된 UX Spec(02 화면 상태·문구·권한)을 따릅니다. `scan`의 기존 컴포넌트를 먼저 재사용합니다.
-   - **화면·컴포넌트 배치**(`reference/ui.md` §4): `[ui]` 프로젝트의 `kind = "ui"` 배치는 아래가 없으면 `batch-start`가 거부합니다(`ui_plan_required`). 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지).
+   - **화면·컴포넌트 배치**(`reference/ui.md` §4): `[ui]` 프로젝트의 `kind = "ui"` 배치는 아래가 없으면 `batch-start`가 거부합니다(`ui_plan_required`). 구현 전에 `ui-brief --batch Bxx` → `.ai-workflow/build/ui/Bxx/plan.json`(UI Plan) 작성 → `ui-plan-validate --batch Bxx` 통과. 대응표에 있는 부품은 반드시 재사용하고, `design-preview/`는 시각 참고만 합니다(import·복사 금지). 배치에 `touches`(소유하지 않지만 바꾸는 화면)가 있으면 UI Plan `touched`에 화면별 변경 내용(`changes`)·변경 경로(`via`)와 대표 상태(`states`)·위임(`covered_by`)·원장 예외(`exempt`) 중 하나를 적습니다. 대표 상태 증거(E2 또는 사용자 확인 EM)가 없으면 최종 UI 승인이 막힙니다(`reference/ui.md` §4.1).
    - 계획의 신규 부품을 만들면 `ui-map register --source built --batch Bxx`로 등록합니다. 배치 제출 전에 `ui-map check --batch Bxx`, `token-check`, `token-audit --batch Bxx`를 실행해 결과를 보고합니다. `verify`도 대응표가 있으면 배치 범위 중복 부품을 차단하고, UI Plan의 재사용 부품을 코드가 쓰지 않으면 `planned_reuse_not_used`로 보고합니다(정적 참조는 렌더링 증거가 아님). 토큰 예외·감사 예외는 사유와 사용자 문장이 있어야 등록·변경·삭제합니다(`ui-map except`·`unexcept`). 예외가 바뀌면 그 기준으로 검증된 UI 배치는 다시 검사합니다.
    - **화면 상태 테스트는 상태 태그를 붙입니다**(`reference/ui.md` §5: `[SCR-001-ST2] …`). Must 화면의 정의된 상태는 E2가 필요합니다. 자동화하지 못한 확인(키보드·스크린리더 등)은 사용자가 직접 확인한 문장을 받아 `evidence-manual add`로 기록합니다(EM은 E2를 대신하지 않음). 브라우저 단계는 프로필의 `pb-ui` 단계로 실행합니다(§6). 도구 설치는 사용자 확인 후.
    - 명세에 없는 정책은 임의로 확정하지 않습니다(`reference/ledger.md`).

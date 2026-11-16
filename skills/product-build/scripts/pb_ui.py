@@ -19,7 +19,7 @@ from pb_core import (
     is_protected, now, read_text, screen_info, sha_file, strip_comments, strip_fences, write_owned,
 )
 from pb_exec import in_patterns
-from pb_scan import DEFAULT_EXCLUDE, MAX_FILE_BYTES, NON_SOURCE_TOP, TEXT_EXT, is_test_path
+from pb_scan import DEFAULT_EXCLUDE, MAX_FILE_BYTES, NON_SOURCE_TOP, TEXT_EXT, cmp_markers, import_re, is_test_path
 
 # /product-design의 읽기 전용 함수(토큰 표·CSS 변수·테마 계약 해석). 상태를 쓰는 함수는 가져오지 않습니다(tests가 검사).
 from pd_theme import css_var_name, parse_css_vars, parse_tokens, read_theme, theme_check  # noqa: E402
@@ -316,7 +316,9 @@ def map_problems(project: Path, umap: dict, plan: dict | None, st: dict | None, 
 
 
 def duplicate_findings(project: Path, files: list[str], comps: dict, texts: dict[str, str] | None = None) -> tuple[list[dict], list[str], list[str]]:
-    """대응되지 않은 파일이 이미 대응된 CMP의 표지를 갖거나(중복 구현), 대응된 부품과 이름이 같은지(중복 의심).
+    """대응되지 않은 파일이 이미 대응된 CMP의 **구현 표지**를 갖거나(중복 구현), 대응된 부품과 이름이 같은지(중복 의심).
+    구현 표지는 pb_scan.cmp_markers 기준입니다(머리 선언 주석, data-cmp 렌더). 주석·문장 속 참조는 소유권 근거가 아닙니다.
+    data-cmp는 그 파일이 대응 부품을 import하지 않고 직접 렌더할 때만 중복입니다(감싸는 사용처 제외).
     texts가 있으면 그 내용(ui-guard의 스냅샷)을 쓰고, 없으면 파일을 읽습니다."""
     mapped_paths = {m.get("path"): c for c, m in comps.items() if m.get("path")}
     exports = {m.get("export"): c for c, m in comps.items() if m.get("export")}
@@ -325,13 +327,15 @@ def duplicate_findings(project: Path, files: list[str], comps: dict, texts: dict
         if rel in mapped_paths:
             continue
         if texts is not None and rel in texts:
-            txt = (texts[rel] or "")[:4000]
+            txt = texts[rel] or ""
         else:
             try:
-                txt = (project / rel).read_text(encoding="utf-8", errors="replace")[:4000]
+                txt = (project / rel).read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-        for c in sorted(set(re.findall(r"CMP-\d{3}", txt))):
+        mk = cmp_markers(txt)
+        impl = set(mk["declared"]) | {c for c in mk["rendered"] if c in comps and not imports_mapped(txt, comps[c])}
+        for c in sorted(impl):
             if c in comps and comps[c].get("path") != rel:
                 dup.append({"file": rel, "cmp": c, "mapped": comps[c].get("path") or comps[c].get("package")})
                 E.append(f"[duplicate_component] {rel}가 {c} 표지를 갖고 있지만 {c}는 이미 {comps[c].get('path') or comps[c].get('package')}에 대응됩니다")
@@ -339,6 +343,17 @@ def duplicate_findings(project: Path, files: list[str], comps: dict, texts: dict
         if stem in exports and comps[exports[stem]].get("path") != rel:
             W.append(f"[possible_duplicate] {rel}의 이름이 대응된 부품 {exports[stem]}({comps[exports[stem]].get('path')})과 같습니다")
     return dup, E, W
+
+
+def imports_mapped(text: str, entry: dict) -> bool:
+    """파일이 대응된 부품(경로 파일 이름·라이브러리 패키지·export 이름)을 import하는지(정적 근사)."""
+    if entry.get("path") and import_re(Path(entry["path"]).stem).search(text):
+        return True
+    pkg = re.sub(r"(?<=.)@[^/@]*$", "", entry.get("package") or "")  # 'lib@1.2'·'@scope/lib@1.2' → 이름만
+    if pkg and re.search(rf"""from\s+['"]{re.escape(pkg)}(?:/[^'"]*)?['"]""", text):
+        return True
+    exp = entry.get("export")
+    return bool(exp and re.search(rf"\bimport\b[^;]*?(?<![\w$]){re.escape(exp)}(?![\w$])[^;]*?\bfrom\b", text, re.S))
 
 
 def candidates(project: Path, prof: dict, uprof: dict, umap: dict | None) -> dict:
@@ -657,8 +672,60 @@ def build_brief(project: Path, st: dict, plan: dict, bid: str, prof: dict, uprof
         "sources": sources, "warnings": warnings,
     }
     brief["layout"] = layout_info(project, list(screens), approved)
+    if b.get("touches"):  # touches가 있는 배치만(소유 화면만 있는 배치의 Brief는 이전과 같음)
+        brief["touched"] = touched_info(project, plan, b, sinfo, acst, model, batch_acs, vds, targets, warnings)
     brief["digest"] = brief_digest(brief)
     return brief
+
+
+# ---------------------------------------------------------------- touches 화면(M3 P1): 소유하지 않지만 이 배치가 바꾸는 화면
+TOUCHED_RULES = "touched-v1"
+TOUCHED_VIA_FIXED = ("layout", "screen")  # 배치 CMP 외의 변경 경로: 공통 레이아웃·패턴, 그 화면 고유 코드
+TOUCHED_NOTE = ("이 배치가 소유하지 않지만 바꾸는 화면입니다. 화면마다 증거를 내지 않고, 변경 경로(via)마다 대표 화면의 상태에서 증거를 냅니다. "
+                "affected_via = 이 배치가 다루는 CMP 중 그 화면에 있는 것(수정 영향 후보), referenced = 화면에 있지만 이 배치가 다루지 않는 CMP(참조).")
+
+
+def touched_info(project: Path, plan: dict, b: dict, sinfo: dict, acst: dict, model: dict, batch_acs: list[str], vds: dict,
+                 targets: dict, warnings: list[str]) -> dict:
+    """touches 화면 명세: 상태·CMP(영향/참조 구분)·이 배치 AC·VD(화면·부품 경유 구분)·레이아웃 원문. Brief digest에서는 제외하고
+    자체 digest로 무결성을 확인합니다(원천 문서 해시는 Brief sources에 있어 명세가 바뀌면 Brief digest도 바뀜)."""
+    owners = {s: x.get("id") for x in plan.get("batches") or [] for s in x.get("screens") or []}
+    batch_cmps = set(comp_list(b, "reuse")) | set(comp_list(b, "new"))
+    lay = screen_layouts(project)
+    screens = {}
+    for s in b.get("touches") or []:
+        if s not in sinfo:
+            warnings.append(f"{s}(touches): {SCREENS_FILE}에 화면 블록이 없습니다")
+            continue
+        here = []
+        for a in batch_acs:
+            sts = [x for x in acst.get(a, []) if x.startswith(s + "-")]
+            if sts:
+                here.append({"id": a, "title": model["AC"][a]["title"], "priority": model["AC"][a]["priority"], "states": sts,
+                             "target_level": targets.get(a)})
+        prios = [model["US"].get(u, {}).get("priority") for u in sinfo[s]["trace"] if u.startswith("US-")]
+        prio = "Must" if "Must" in prios else ("Should" if "Should" in prios else ("Could" if "Could" in prios else None))
+        sb = screen_brief(s, sinfo[s], here, prio)
+        comps = set(sb["components"])
+        vd = []
+        for k, v in sorted(vds.items()):
+            rel_c = sorted(comps & set(re.findall(r"CMP-\d{3}", v["related"])))
+            if s in v["related"] or rel_c:
+                vd.append({"id": k, "title": v["title"], "decision": v["decision"], "via": "screen" if s in v["related"] else rel_c[0]})
+        screens[s] = {"name": sb["name"], "route": sb["route"], "owner": owners.get(s), "priority": prio,
+                      "states": [{k: x[k] for k in ("id", "label", "behavior", "defined")} for x in sb["states"]],
+                      "components": sb["components"], "affected_via": sorted(comps & batch_cmps), "referenced": sorted(comps - batch_cmps),
+                      "acs": here, "vd": vd, "layout": lay.get(s)}
+        if not any(x["defined"] for x in sb["states"]):
+            warnings.append(f"{s}(touches): 상태 표에서 정의된 상태(ID)를 찾지 못했습니다")
+    component_vd = []
+    for k, v in sorted(vds.items()):
+        cs = sorted(batch_cmps & set(re.findall(r"CMP-\d{3}", v["related"])))
+        if cs:
+            component_vd.append({"id": k, "title": v["title"], "decision": v["decision"], "cmps": cs})
+    out = {"note": TOUCHED_NOTE, "rules": TOUCHED_RULES, "screens": screens, "component_vd": component_vd}
+    out["digest"] = digest(out)
+    return out
 
 
 # ---------------------------------------------------------------- 레이아웃·공통 패턴 전달(승인 문서 원문, 엔진은 해석·보완하지 않음)
@@ -674,15 +741,19 @@ LAYOUT_NOTE = ("승인된 02 '레이아웃'·04 '공통 패턴' 원문과 승인
 def brief_digest(brief: dict) -> str:
     """Brief 내용 digest. layout(원문 전달)은 제외합니다: 원문 파일(02·04)의 해시가 sources에 있어 바뀌면 digest가 바뀌고,
     기존 Brief·UI Plan 검증 기록의 digest도 그대로 유지됩니다. layout 자체의 무결성은 layout.digest로 확인합니다."""
-    return digest({k: v for k, v in brief.items() if k not in ("digest", "layout")})
+    return digest({k: v for k, v in brief.items() if k not in ("digest", "layout", "touched")})
 
 
 def brief_intact(brief: dict) -> bool:
-    """저장된 Brief가 엔진이 만든 그대로인지(digest·layout.digest). layout이 없는 이전 Brief도 인정합니다."""
+    """저장된 Brief가 엔진이 만든 그대로인지(digest·layout.digest·touched.digest). layout·touched가 없는 이전 Brief도 인정합니다.
+    touched(touches 화면 명세)도 layout처럼 Brief digest에서 빼고 자체 digest로 확인합니다: 기존 Brief·UI Plan 검증 기록을 낡게 하지 않기 위해서입니다."""
     if brief.get("digest") != brief_digest(brief):
         return False
-    lay = brief.get("layout")
-    return lay is None or (isinstance(lay, dict) and lay.get("digest") == digest({k: v for k, v in lay.items() if k != "digest"}))
+    for key in ("layout", "touched"):
+        sub = brief.get(key)
+        if sub is not None and not (isinstance(sub, dict) and sub.get("digest") == digest({k: v for k, v in sub.items() if k != "digest"})):
+            return False
+    return True
 
 
 def _drop_comments(text: str) -> str:
@@ -763,6 +834,9 @@ def plan_skeleton(brief: dict) -> dict:
                            "part": (v.get("mapping") or {}).get("export", ""), "file": (v.get("mapping") or {}).get("path", "")}
                        for c, v in brief["components"].items()},
         "notes": [],
+        **({"touched": {s: {"changes": "", "via": t["affected_via"], "states": {},
+                            "acs": {a["id"]: {"states": a["states"]} for a in t["acs"]}}
+                        for s, t in brief["touched"]["screens"].items()}} if brief.get("touched") else {}),
     }
 
 
@@ -792,19 +866,47 @@ def _walk(nodes, path="tree"):
             yield from _walk(n.get("children"), f"{path}[{i}].children")
 
 
-def _preview_refs(obj, where="") -> list[str]:
-    hits = []
+# UI Plan의 자유 서술 필드(설명·근거). 여기서 프리뷰 경로가 "언급"만 되면 경고, 재사용 "지시"면 오류입니다.
+# 그 밖의 모든 필드(경로·참조·알 수 없는 키)는 종전대로 프리뷰 경로가 있으면 오류입니다(안전한 기본값).
+PREVIEW_TEXT_KEYS = {"notes", "note", "description", "summary", "reason", "rationale", "comment", "comments", "memo", "why", "changes",
+                     "intent", "trigger", "result", "action"}
+PREVIEW_EXEMPT_KEYS = {"visual_ref"}  # 시각 참고 표시(프리뷰 화면 위치)
+# 재사용 지시: 코드 수준(import·require·동적 import·CSS @import·셸 복사)과 문장 수준(복사·이식·그대로 가져옴 등). 부정문은 언급으로 봄.
+_REUSE_CODE_RE = re.compile(r"""\bimport\b[^\n]*?\bfrom\s*['"][^'"]*design-preview|\bimport\s*\(\s*['"][^'"]*design-preview|\brequire\s*\(\s*['"][^'"]*design-preview"""
+                            r"""|@import\s+(?:url\()?['"]?[^'"\s]*design-preview|(?:^|[\s;&|`])(?:cp|mv|rsync|git\s+mv|xcopy)\s+(?:-\S+\s+)*\S*design-preview""", re.I)
+_REUSE_VERB_RE = re.compile(r"복사|복제|붙여\s*넣|옮겨|이식|그대로\s*(?:가져|써|사용|쓰)|재사용|가져와|\b(?:copy|copies|copied|paste|port|ported|reuse|reused|move|import|lift)\b", re.I)
+_NEGATION_RE = re.compile(r"않|말고|말 것|금지|없이|안\s*(?:함|합니다|한다|됨)|하지\s*마|\b(?:not|never|don't|do not|no|without|avoid)\b", re.I)
+
+
+def _reuse_directive(text: str) -> bool:
+    if _REUSE_CODE_RE.search(text):
+        return True
+    for sent in re.split(r"(?<=[.!?。])\s+|\n+|;\s*", text):
+        if PREVIEW_DIR in sent and _REUSE_VERB_RE.search(sent) and not _NEGATION_RE.search(sent):
+            return True
+    return False
+
+
+def preview_findings(obj, where: str = "", key: str | None = None, in_text: bool = False) -> tuple[list[str], list[str]]:
+    """UI Plan 안 프리뷰 경로 → (오류 위치, 경고 위치). 자유 서술 필드의 단순 언급·참고 설명은 경고(preview_mentioned),
+    재사용 지시는 오류. 경로·참조 필드와 알 수 없는 필드는 오류(preview_reuse)."""
+    errs: list[str] = []
+    warns: list[str] = []
     if isinstance(obj, dict):
         for k, v in obj.items():
-            if k == "visual_ref":  # 시각 참고 표시는 허용(프리뷰 화면 위치를 적을 수 있음)
+            if k in PREVIEW_EXEMPT_KEYS:
                 continue
-            hits += _preview_refs(v, f"{where}.{k}" if where else k)
+            e, w = preview_findings(v, f"{where}.{k}" if where else k, k, in_text or k in PREVIEW_TEXT_KEYS)
+            errs += e
+            warns += w
     elif isinstance(obj, list):
         for i, v in enumerate(obj):
-            hits += _preview_refs(v, f"{where}[{i}]")
+            e, w = preview_findings(v, f"{where}[{i}]", key, in_text)
+            errs += e
+            warns += w
     elif isinstance(obj, str) and PREVIEW_DIR in obj:
-        hits.append(where)
-    return hits
+        (warns if in_text and not _reuse_directive(obj) else errs).append(where)
+    return errs, warns
 
 
 def planned_reuse_refs(project: Path, uplan: dict | None, umap: dict | None, files: list[str]) -> dict:
@@ -855,8 +957,9 @@ def similar_mapped(part: str, mapped_exports: dict) -> list[str]:
 
 
 def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bid: str, umap: dict | None, uprof: dict,
-                     ledger_ids: set[str] | dict) -> dict:
-    """ledger_ids: 원장 ID 집합 또는 {ID: 항목}. cmp_exclusions의 결정 상태 확인에는 항목이 필요합니다."""
+                     ledger_ids: set[str] | dict, legacy: bool = False) -> dict:
+    """ledger_ids: 원장 ID 집합 또는 {ID: 항목}. cmp_exclusions·touched exempt의 결정 상태 확인에는 항목이 필요합니다.
+    legacy: 이미 시작된 배치(이전 엔진으로 계획)면 True. UI Plan에 touched가 없을 때 touches 규칙을 경고로만 보고합니다."""
     E, W = [], []
 
     def err(code, msg):
@@ -873,8 +976,11 @@ def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bi
         err("ui_plan_format", f"batch가 {bid}가 아닙니다")
     if uplan.get("brief_digest") != brief_now["digest"]:
         err("brief_stale", "UI Plan이 현재 UI Brief(승인 문서·계획·대응표 기준)와 다른 Brief를 기준으로 합니다. ui-brief를 다시 받고 계획을 확인하세요")
-    for where in _preview_refs(uplan):
-        err("preview_reuse", f"{where}: design-preview/ 경로를 제품 코드 입력으로 쓸 수 없습니다(시각 참고는 visual_ref에만)")
+    pv_err, pv_warn = preview_findings(uplan)
+    for where in pv_err:
+        err("preview_reuse", f"{where}: design-preview/ 경로를 제품 코드 입력으로 쓰거나 재사용하도록 지시할 수 없습니다(시각 참고는 visual_ref에만)")
+    for where in pv_warn:
+        warn("preview_mentioned", f"{where}: 설명에 design-preview/ 경로가 있습니다. 시각 참고만 하고 프리뷰 코드는 재사용하지 않습니다")
     b = batches_by_id(plan)[bid]
     allow = ((b.get("paths") or {}).get("allow") or []) + ((b.get("paths") or {}).get("shared") or [])
     comps_map = (umap or {}).get("components") or {}
@@ -1021,6 +1127,119 @@ def validate_ui_plan(project: Path, uplan: dict, brief_now: dict, plan: dict, bi
     for c in comp_list(b, "new"):
         if c not in used_cmps and c not in cdecl:
             warn("new_unused", f"{c}: 이 배치가 새로 만드는 컴포넌트가 UI Plan 어디에도 없습니다")
+    # touches 화면(M3 P1). 기존(시작된) 배치의 touched 없는 UI Plan은 경고로만 보고(legacy)
+    tres = validate_touched(uplan, brief_now, ledger_ids)
+    if legacy and "touched" not in uplan:
+        for code, msg in tres["errors"]:
+            warn("touched_plan_legacy", f"({code}) {msg} — 이미 시작된 배치의 이전 UI Plan이라 경고만 합니다(다시 계획하면 적용)")
+    else:
+        for code, msg in tres["errors"]:
+            err(code, msg)
+    for code, msg in tres["warnings"]:
+        warn(code, msg)
+    if brief_now.get("kind") == "ui" and not brief_now["screens"] and not ((brief_now.get("touched") or {}).get("screens")):
+        warn("no_screen_plan", "UI 배치인데 소유 화면도 touches 화면도 없습니다(검증할 화면 계획이 없음). 계획의 screens·touches를 확인하세요")
     return {"ok": not E, "errors": E, "warnings": W,
             "counts": {"screens": len(scr_plan), "states": sum(len((v or {}).get("states") or {}) for v in scr_plan.values() if isinstance(v, dict)),
-                       "cmps_used": len(used_cmps)}}
+                       "cmps_used": len(used_cmps), "touched": tres["counts"]}}
+
+
+def validate_touched(uplan: dict, brief_now: dict, ledger_ids) -> dict:
+    """UI Plan `touched` 섹션 검사(대표 화면 규칙, docs/roadmap/m3-p1-touched-screens-design.md §4). (오류 [(코드, 문장)], 경고, 집계)."""
+    E: list[tuple[str, str]] = []
+    W: list[tuple[str, str]] = []
+    tb = (brief_now.get("touched") or {}).get("screens") or {}
+    raw = uplan.get("touched")
+    counts = {"screens": len(tb), "representative": 0, "covered": 0, "exempt": 0}
+    if raw is not None and not isinstance(raw, dict):
+        E.append(("ui_plan_format", "touched는 {화면 ID: {...}} 객체여야 합니다"))
+        raw = {}
+    tplan = raw or {}
+    if not tb and not tplan:
+        return {"errors": E, "warnings": W, "counts": counts}
+    owned = brief_now["screens"]
+    allowed_via = set(brief_now["components"]) | set(TOUCHED_VIA_FIXED)
+    batch_acs = set(brief_now["acs"])
+    for s in tb:
+        if s not in tplan:
+            E.append(("touched_missing", f"{s}: 이 배치가 바꾸는 화면(touches)의 계획이 없습니다. touched.{s}에 changes·via와 대표 상태(states)·위임(covered_by)·예외(exempt) 중 하나를 적으세요"))
+    for s in tplan:
+        if s not in tb:
+            E.append(("touched_unknown", f"touched.{s}: " + ("소유 화면은 screens에 계획합니다" if s in owned else "이 배치의 touches 화면이 아닙니다")))
+    reps: dict[str, set[str]] = {}
+    pending_cover = []
+    for s, tp in tplan.items():
+        if s not in tb:
+            continue
+        where = f"touched.{s}"
+        if not isinstance(tp, dict):
+            E.append(("ui_plan_format", f"{where}: 객체여야 합니다"))
+            continue
+        if not str(tp.get("changes") or "").strip():
+            E.append(("touched_changes", f"{where}: 무엇이 바뀌는지(changes)가 필요합니다"))
+        via = tp.get("via") if isinstance(tp.get("via"), list) else []
+        bad_via = [x for x in via if x not in allowed_via]
+        if not via or bad_via:
+            E.append(("touched_via", f"{where}: via(변경 경로)는 이 배치의 CMP({', '.join(sorted(brief_now['components'])) or '없음'}) 또는 "
+                                     f"{'/'.join(TOUCHED_VIA_FIXED)} 중 하나 이상이어야 합니다" + (f"(알 수 없음: {', '.join(map(str, bad_via))})" if bad_via else "")))
+        defined = {x["id"] for x in tb[s]["states"] if x["defined"]}
+        sts = tp.get("states") if isinstance(tp.get("states"), dict) else {}
+        good_states = set()
+        for x, v in sts.items():
+            if x not in defined:
+                E.append(("touched_state_unknown", f"{where}: {x}는 02 문서에 정의된 {s}의 상태가 아닙니다"))
+            elif not isinstance(v, dict) or v.get("how") not in STATE_HOW or not str(v.get("ref", "")).strip():
+                E.append(("touched_state_how", f"{where}/{x}: how({'/'.join(STATE_HOW)})와 ref(재현 방법)가 필요합니다"))
+            else:
+                good_states.add(x)
+        must = (["via에 screen(이 화면 고유 변경)"] if "screen" in via else []) + (
+            [f"이 배치 AC({', '.join(a['id'] for a in tb[s]['acs'])})가 이 화면 상태를 가리킴"] if tb[s]["acs"] else [])
+        exempt = tp.get("exempt")
+        if exempt:
+            it = ledger_ids.get(exempt) if isinstance(ledger_ids, dict) and isinstance(exempt, str) else None
+            if not (it and it.get("type") in NEW_REASON_TYPES and it.get("status") in NEW_REASON_STATUSES):
+                E.append(("touched_exempt_invalid", f"{where}: exempt {exempt}는 결정된 policy·deviation 원장 항목이 아닙니다(ledger add → decide)"))
+            elif must:
+                E.append(("touched_must_represent", f"{where}: 예외로 뺄 수 없습니다({'; '.join(must)}). 대표 상태(states)를 계획하세요"))
+            else:
+                counts["exempt"] += 1
+                W.append(("touched_exempted", f"{where}: 원장 {exempt}의 결정에 따라 이 화면의 증거를 요구하지 않습니다"))
+            continue
+        if good_states:
+            reps[s] = set(via)
+            counts["representative"] += 1
+            if tp.get("covered_by"):
+                W.append(("touched_cover_ignored", f"{where}: 대표 상태(states)가 있어 covered_by는 쓰지 않습니다"))
+        elif must:
+            E.append(("touched_must_represent", f"{where}: 이 화면은 대표 상태(states)가 필요합니다({'; '.join(must)})"))
+        elif tp.get("covered_by"):
+            pending_cover.append((s, set(via), tp["covered_by"]))
+        elif not sts:
+            E.append(("touched_states", f"{where}: 대표 상태(states), 다른 대표 화면 위임(covered_by), 원장 예외(exempt) 중 하나가 필요합니다"))
+        acp = tp.get("acs") if isinstance(tp.get("acs"), dict) else {}
+        for a in tb[s]["acs"]:
+            if a["id"] not in acp:
+                E.append(("touched_ac_unlinked", f"{where}: {a['id']}가 이 화면 상태({', '.join(a['states'])})를 가리키는데 acs에 없습니다"))
+        for a, v in acp.items():
+            if a not in batch_acs:
+                E.append(("ac_not_in_batch", f"{where}: {a}는 이 배치의 AC가 아닙니다"))
+                continue
+            for x in (v or {}).get("states", []) if isinstance(v, dict) else []:
+                if x not in good_states:
+                    E.append(("touched_ac_state", f"{where}/{a}: {x}는 이 화면의 대표 상태(states)가 아닙니다(증거 대상에 넣으세요)"))
+    for s, via, t in pending_cover:
+        where = f"touched.{s}.covered_by"
+        if t in reps:
+            target_via, kind = reps[t], "대표 touches 화면"
+        elif t in owned:
+            target_via, kind = set(owned[t].get("components") or []) | {"layout"}, "소유 화면"
+        else:
+            E.append(("touched_covered_by", f"{where}: {t}는 이 배치의 대표 touches 화면(states 있음)이나 소유 화면이 아닙니다"))
+            continue
+        if not (via & target_via):
+            E.append(("touched_covered_by", f"{where}: {t}({kind})와 겹치는 변경 경로(via)가 없습니다(이 화면 {', '.join(sorted(via)) or '없음'})"))
+        else:
+            counts["covered"] += 1
+    if tb and not owned and not reps and counts["exempt"] == len(tb):
+        W.append(("no_representative", "소유 화면이 없고 touches 화면이 모두 예외입니다. 이 배치의 화면 변경 증거가 없습니다"))
+    return {"errors": E, "warnings": W, "counts": counts}

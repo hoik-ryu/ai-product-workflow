@@ -409,7 +409,11 @@ def scenario_new(root: Path) -> None:
           and brief["tokens"]["source"] == f"theme:{THEME}" and brief["tokens"]["approved"]["color.primary"] == "#1D5BD0"
           and brief["components"]["CMP-001"]["role"] == "new_in:B0", brief.get("screens", {}).get("SCR-001", {}).get("vd"))
     T.G(d, "add", "-A"); T.G(d, "commit", "-qm", "brief")
+    gi = d / ".ai-workflow/build/.gitignore"
+    gi_before = gi.read_bytes()
     lock = DDT_start(d, "B0")
+    check("B2b P2-1 첫 batch-start가 init이 만든 .ai-workflow/build/.gitignore를 바꾸지 않음(Git 변경 없음)",
+          gi.read_bytes() == gi_before and not G(d, "status", "--porcelain", "--", ".ai-workflow/build/.gitignore").strip(), gi.read_text())
     w(d, "web/src/components/Button.view", "// CMP-001\nexport function Button(p) { return p }\n")
     w(d, "web/src/components/SeatMap.view", "// CMP-002\nexport function SeatMap(p) { return p }\n")
     w(d, "web/src/styles/tokens.css", ":root {\n  --color-bg: #FFFFFF;\n  --color-text: #1A1A1A;\n  --color-primary: #0E6B4F;\n  --space-unit: 4px;\n  --radius-md: 8px;\n}\n")
@@ -448,6 +452,20 @@ def scenario_new(root: Path) -> None:
           and any(x.startswith("[possible_duplicate]") for x in out["warnings"]), out)
     for f in ("MySeatMap.view", "SeatMap.view"):
         (d / "web/src/features/seats" / f).unlink()
+    # P0-1: 구현 표지와 단순 참조 구분(주석 참조·보조 파일·사용처는 중복 아님)
+    w(d, "web/src/features/seats/seatHooks.view", "// CMP-002 SeatMap 보조 훅. 선택 상태를 기억합니다.\nexport function useSeatSelection() { return 1 }\n")
+    w(d, "web/src/features/seats/SeatPanel.view", "import { SeatMap } from '../../components/SeatMap'\n"
+      "export function SeatPanel(p) {\n  // 좌석 지도(CMP-002)를 감싸고 버튼(CMP-001)을 아래에 둡니다\n"
+      "  return '<SeatMap data-cmp=\"CMP-002\" />'\n}\n")
+    code, out = pb(d, "ui-map", "check", "--batch", "B1")
+    check("B10b 주석·보조 훅 머리 주석·대응 부품을 import해 감싸는 사용처의 CMP 언급은 중복 아님(참조)",
+          code == 0 and not out["duplicates"] and not has(out, "duplicate_component"), out)
+    w(d, "web/src/features/seats/InlineSeat.view", "export function InlineSeat() {\n  return '<div data-cmp=\"CMP-002\" class=\"seat-grid\"></div>'\n}\n")
+    code, out = pb(d, "ui-map", "check", "--batch", "B1")
+    check("B10c 대응 부품을 import하지 않고 같은 data-cmp 표지를 직접 렌더 → duplicate_component",
+          code == 2 and [x["file"] for x in out["duplicates"]] == ["web/src/features/seats/InlineSeat.view"], out)
+    for f in ("seatHooks.view", "SeatPanel.view", "InlineSeat.view"):
+        (d / "web/src/features/seats" / f).unlink()
     pb(d, "ui-map", "tokens", "--file", "web/src/styles/tokens.css", "--note", "B0의 tokens.css를 기준으로 합니다")
     code, out = pb(d, "token-check")
     check("B11 v2 테마 기준 비교: 테마가 바꾼 color.primary 불일치 보고, 기대 CSS 제공", code == 2 and out["source"] == f"theme:{THEME}"
@@ -459,6 +477,29 @@ def scenario_new(root: Path) -> None:
     write_ui_plan(d, good_ui_plan(out["digest"]))
     code, out = pb(d, "ui-plan-validate", "--batch", "B1")
     check("B13 신규 프로젝트: 등록된 부품(built) 기준으로 UI Plan 통과", code == 0, errs(out))
+    # P0-2: 자유 서술의 프리뷰 경로 언급과 실제 재사용 지시 구분
+    digest = json.loads((d / ".ai-workflow/build/ui/B1/plan.json").read_text())["brief_digest"]
+    p = good_ui_plan(digest)
+    p["notes"] = ["프리뷰(design-preview/)는 시각 참고만 하고 코드는 재사용하지 않습니다",
+                  "design-preview/src/screens/SCR-001.tsx 결과물을 간격·배치 참고 대상으로 봅니다"]
+    write_ui_plan(d, p)
+    code, out = pb(d, "ui-plan-validate", "--batch", "B1")
+    check("B13b notes의 프리뷰 경로 설명·참고 대상 언급은 통과(경고 preview_mentioned)",
+          code == 0 and any(x.startswith("[preview_mentioned]") for x in out["warnings"]), out)
+    for bad_note in ("design-preview/src/SeatMap.tsx를 복사해 SeatStatusPage를 구현합니다",
+                     "import { SeatMap } from '../../../design-preview/src/SeatMap'"):
+        p["notes"] = [bad_note]
+        write_ui_plan(d, p)
+        code, out = pb(d, "ui-plan-validate", "--batch", "B1")
+        check(f"B13c notes의 실제 재사용 지시는 계속 차단(preview_reuse): {bad_note[:24]}…", code == 2 and has(out, "preview_reuse"), out)
+    p = good_ui_plan(digest)
+    p["screens"]["SCR-001"]["tree"][0]["file"] = "design-preview/src/screens/SCR-001.tsx"
+    write_ui_plan(d, p)
+    code, out = pb(d, "ui-plan-validate", "--batch", "B1")
+    check("B13d 구현 경로(tree file)에 프리뷰 지정은 계속 차단", code == 2 and has(out, "preview_reuse"), errs(out))
+    write_ui_plan(d, good_ui_plan(digest))
+    code, out = pb(d, "ui-plan-validate", "--batch", "B1")
+    check("B13e 기존 유효 UI Plan(visual_ref 포함)은 계속 통과", code == 0 and not any(x.startswith("[preview_mentioned]") for x in out["warnings"]), errs(out))
     check("B14 승인 문서·state.yaml·design.json·테마 불변", T.protected_snapshot(d) == snap)
 
 

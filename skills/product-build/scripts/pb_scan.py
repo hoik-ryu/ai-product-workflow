@@ -229,8 +229,74 @@ def import_re(stem: str) -> re.Pattern:
     return re.compile(rf"""from\s+['"][^'"]*/{re.escape(stem)}['"]|import\s+['"][^'"]*/{re.escape(stem)}['"]""")
 
 
+CMP_ID_RE = re.compile(r"CMP-\d{3}")
+MARKER_SCAN_CHARS = 4000  # 표지는 파일 앞부분에서만 찾습니다(ui-map check·ui-guard·scan 공통)
+DATA_CMP_RE = re.compile(r"""data-cmp\s*=\s*\{?\s*["'`](CMP-\d{3})["'`]""")
+_COMMENT_START_RE = re.compile(r"^\s*(?://+|#+|/\*+|\*+|<!--|\{/\*+)\s*")
+_HEAD_SKIP_RE = re.compile(r"""^\s*(?:$|//|#|/\*|\*|<!--|\{/\*|-->|import\b|export\s+(?:\*|\{[^}]*\})\s+from\b|from\s+\S+\s+import\b|"use [a-z ]+";?$|'use [a-z ]+';?$|@charset\b|<script\b|<style\b)""")
+_EXPORT_ANY_RE = re.compile(r"(?m)^\s*export\b|\bmodule\.exports\b")
+_PASCAL_EXPORT_RE = re.compile(r"\bexport\s+(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Z][a-z0-9][\w$]*)")
+# 화면을 그리지 않는 PascalCase 이름(문맥·저장소·스키마 등). 화면·레이아웃(Page·Layout·View 등)은 UI를 그리므로 여기에 넣지 않습니다
+# (그 파일의 머리 선언은 종전대로 표지로 봄: 판정을 좁히는 범위를 보조 파일로 한정).
+NON_RENDERING_SUFFIX = ("Context", "Provider", "Store", "Service", "Client", "Api", "Error", "Exception", "Schema", "Config", "Mock")
+
+
+def exports_component(text: str) -> bool:
+    """부품처럼 보이는 export가 있는지: default export, 또는 비부품 접미사가 아닌 PascalCase 함수·클래스·상수."""
+    if re.search(r"\bexport\s+default\b", text):
+        return True
+    return any(not n.endswith(NON_RENDERING_SUFFIX) for n in _PASCAL_EXPORT_RE.findall(text))
+
+
+def cmp_markers(text: str) -> dict:
+    """파일 안 CMP ID를 구현 표지와 참조로 나눕니다(프레임워크와 무관한 텍스트 규칙, reference/ui.md §2).
+    - rendered: 렌더 속성 `data-cmp="CMP-xxx"`(따옴표·중괄호 변형 포함)
+    - declared: 파일 머리(지시문·import·주석만 있는 앞부분)의 주석 줄이 `CMP-xxx`로 시작하는 선언. 단 export가 있는데
+      부품처럼 보이는 export(default, 또는 Context·Provider·Store 같은 비렌더 접미사가 아닌 PascalCase)가 하나도 없는
+      파일(보조 훅·유틸·상수·문맥)의 머리 주석은 참조로 봅니다.
+    - referenced: 그 밖의 언급(본문 주석·문장·사용처). 구현 소유권의 근거가 아닙니다."""
+    head_text = (text or "")[:MARKER_SCAN_CHARS]
+    rendered = set(DATA_CMP_RE.findall(head_text))
+    declared: set[str] = set()
+    closer = None      # 여러 줄 import가 끝나는 문자('}' 또는 ')')
+    in_block = False   # 여러 줄 블록 주석(/* … */, <!-- … -->) 안
+    for line in head_text.split("\n"):
+        s = line.strip()
+        if closer:
+            if closer in s:
+                closer = None
+            continue
+        if in_block:
+            body = re.sub(r"^\*+\s*", "", s)
+            in_block = not ("*/" in s or "-->" in s)
+        else:
+            if not _HEAD_SKIP_RE.match(line):
+                break  # 첫 코드 줄에서 머리 끝
+            if re.match(r"(?:import|from)\b", s):
+                opened = next((c for o, c in (("{", "}"), ("(", ")")) if o in s and c not in s), None)
+                closer = opened  # import { a,\n b } from … / from x import (\n a\n)
+                continue
+            m = _COMMENT_START_RE.match(line)
+            if not m:
+                continue
+            body = line[m.end():]
+            in_block = (s.startswith("/*") or s.startswith("{/*")) and "*/" not in s or s.startswith("<!--") and "-->" not in s
+        lead = CMP_ID_RE.match(body)
+        if lead:
+            declared.add(lead.group(0))
+    if declared and _EXPORT_ANY_RE.search(text or "") and not exports_component(text or ""):
+        declared = set()  # 부품을 내보내지 않는 보조 파일: 머리 주석의 CMP는 "무엇을 돕는지"에 대한 참조
+    referenced = set(CMP_ID_RE.findall(head_text)) - declared - rendered
+    return {"declared": sorted(declared), "rendered": sorted(rendered), "referenced": sorted(referenced)}
+
+
+def implementation_markers(text: str) -> list[str]:
+    m = cmp_markers(text)
+    return sorted(set(m["declared"]) | set(m["rendered"]))
+
+
 def component_inventory(project: Path, comp_roots: list[str], src_files: list[str], cmps: dict) -> dict:
-    """프로필 components 경로의 파일 → 대응 CMP(파일 안 'CMP-xxx' 표지 또는 이름 일치)와 사용처 수."""
+    """프로필 components 경로의 파일 → 대응 CMP(파일의 구현 표지 또는 이름 일치)와 사용처 수. 참조(주석 언급)는 후보 근거가 아닙니다."""
     files = [f for f in src_files if any(f.startswith(r.rstrip("/") + "/") for r in comp_roots) and not is_test_path(f)]
     name_to_cmp = {re.sub(r"[^a-z0-9]", "", v.lower()): k for k, v in cmps.items()}
     texts = {f: _read(project, f) for f in src_files if not is_test_path(f)}
@@ -238,7 +304,7 @@ def component_inventory(project: Path, comp_roots: list[str], src_files: list[st
     for rel in files:
         txt = texts.get(rel, "")
         stem = Path(rel).stem
-        markers = sorted(set(re.findall(r"CMP-\d{3}", txt[:2000])))
+        markers = implementation_markers(txt)
         by_name = name_to_cmp.get(re.sub(r"[^a-z0-9]", "", stem.lower()))
         rx = import_re(stem)
         used_by = [f for f, t in texts.items() if f != rel and rx.search(t)]

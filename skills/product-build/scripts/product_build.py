@@ -142,14 +142,22 @@ def cmd_init(a) -> None:
     if not (project / PROFILE_REL).exists():
         write_owned(project, PROFILE_REL, render_profile(project))
         created.append(PROFILE_REL)
-    if not (project / BUILD_DIR_REL / ".gitignore").exists():
-        write_owned(project, f"{BUILD_DIR_REL}/.gitignore", "# 증거 원본 로그·스크린샷은 Git에서 제외합니다(요약은 build.json에 기록).\nevidence/\n*.log\n")
+    # 실행(batch-start·verify)이 쓰는 것과 같은 목록(GITIGNORE_LINES)을 처음부터 씁니다. 기존 파일은 사용자 규칙을 그대로 두고 빠진 줄만 덧붙입니다.
+    gi = project / BUILD_DIR_REL / ".gitignore"
+    gi_before = gi.read_bytes() if gi.exists() else None
+    if gi_before is None:
+        write_owned(project, f"{BUILD_DIR_REL}/.gitignore", "# /product-build 실행 산출물(증거 원본 로그·스크린샷·실행 기록·잠금)은 Git에서 제외합니다(요약은 build.json에 기록).\n")
+    ensure_gitignore(project)
+    updated = []
+    if gi_before is None:
         created.append(f"{BUILD_DIR_REL}/.gitignore")
+    elif gi.read_bytes() != gi_before:
+        updated.append(f"{BUILD_DIR_REL}/.gitignore")
     st = new_state(engine_ref())
     add_history(st, "plan", "initialized", 0, f"planning r{gate.get('planning_approved_revision')}")
     save_state(project, st)
     created.insert(0, STATE_REL)
-    emit({"ok": True, "status": "initialized", "created": created,
+    emit({"ok": True, "status": "initialized", "created": created, "updated": updated,
           "next": "프로필(docs/build/build-profile.toml)의 경로·검증 명령을 확인한 뒤 scope --draft"})
 
 
@@ -1062,7 +1070,8 @@ def freshness(project: Path, prof: dict, bid: str, b: dict, plan_batch: dict | N
     if ui.get("active") and ui.get("basis"):  # M3.3: UI Plan·승인 디자인 입력·토큰 기준(예외 포함)이 바뀌면 무효
         try:
             uplan, umap = _ui_inputs(project, bid)
-            return UV.describe_changes(UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap)))
+            return UV.describe_changes(UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap,
+                                                                                      UV.basis_touched(ui["basis"]))))
         except Blocked as e:
             return f"UI 입력을 읽을 수 없습니다: {e.payload.get('message')}"
     return None
@@ -1893,7 +1902,11 @@ def cmd_ui_brief(a) -> None:
                        "components": {c: v["role"] for c, v in brief["components"].items()}, "token_source": brief["tokens"]["source"],
                        "layout": {"screens": sorted(brief["layout"]["screens"]), "missing": brief["layout"]["missing"],
                                   "patterns": bool(brief["layout"]["patterns"]["text"]),
-                                  "tokens": {g: len(v) for g, v in brief["layout"]["tokens"].items()}}},
+                                  "tokens": {g: len(v) for g, v in brief["layout"]["tokens"].items()}},
+                       **({"touched": {s: {"affected_via": v["affected_via"], "acs": [x["id"] for x in v["acs"]], "vd": [x["id"] for x in v["vd"]],
+                                           "states_defined": sum(1 for x in v["states"] if x["defined"]), "owner": v["owner"]}
+                                       for s, v in brief["touched"]["screens"].items()},
+                           "component_vd": [x["id"] for x in brief["touched"]["component_vd"]]} if brief.get("touched") else {})},
            "warnings": brief["warnings"], "ui_plan": U.ui_rel(a.batch, "plan.json"),
            "next": f"Claude가 {U.ui_rel(a.batch, 'plan.json')}을 작성(아래 skeleton에서 시작)한 뒤 ui-plan-validate --batch {a.batch}"}
     if a.full:
@@ -1917,12 +1930,13 @@ def cmd_ui_plan_validate(a) -> None:
     if uplan is None:
         block("no_ui_plan", f"UI Plan이 없습니다. {U.ui_rel(a.batch, 'plan.json')}을 작성하세요(ui-brief의 skeleton에서 시작).")
     ledger_items = {i["id"]: i for i in L.load(project)["items"]}
-    r = U.validate_ui_plan(project, uplan, now_brief, plan, a.batch, umap, uprof, ledger_items)
+    legacy = (st.get("batches", {}).get(a.batch) or {}).get("status") in U.STARTED  # 이미 시작된 배치(이전 엔진으로 계획)
+    r = U.validate_ui_plan(project, uplan, now_brief, plan, a.batch, umap, uprof, ledger_items, legacy=legacy)
     if stored.get("digest") != now_brief["digest"]:
         r["errors"].insert(0, "[brief_stale] 저장된 UI Brief가 현재 승인 문서·계획·대응표와 다릅니다. ui-brief를 다시 실행하세요")
         r["ok"] = False
     rec = {"at": now(), "ok": r["ok"], "brief_digest": now_brief["digest"], "plan_sha256": sha_file(project / U.ui_rel(a.batch, "plan.json")),
-           "errors": r["errors"], "warnings": r["warnings"], "counts": r["counts"]}
+           "errors": r["errors"], "warnings": r["warnings"], "counts": r["counts"], "rules": U.TOUCHED_RULES}
     U.write_json(project, U.ui_rel(a.batch, "validation.json"), rec)
     emit({"batch": a.batch, **r, "record": U.ui_rel(a.batch, "validation.json")}, 0 if r["ok"] else 2)
 
@@ -1954,6 +1968,9 @@ def _ui_plan_problems(project: Path, st: dict, prof: dict, bid: str) -> list[str
         probs.append(f"[ui_plan_missing] UI Plan이 없습니다({U.ui_rel(bid, 'plan.json')})")
     elif not (val.get("ok") and val.get("brief_digest") == now_brief["digest"] and val.get("plan_sha256") == plan_sha):
         probs.append(f"[ui_plan_not_validated] UI Plan이 현재 Brief 기준으로 검증되지 않았습니다(ui-plan-validate --batch {bid})")
+    elif now_brief.get("touched") and val.get("rules") != U.TOUCHED_RULES:
+        probs.append(f"[ui_plan_revalidate] touches 화면 계획 규칙({U.TOUCHED_RULES}) 이전에 검증된 UI Plan입니다. "
+                     f"UI Plan에 touched 섹션을 쓰고 ui-plan-validate --batch {bid}를 다시 실행하세요")
     return probs
 
 
@@ -2030,7 +2047,8 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
         R.append("[ui_plan_not_validated] UI Plan이 현재 UI Brief 기준으로 검증(ui-plan-validate 통과)되지 않았습니다")
     tests = [f for f in code_files(project, prof) if is_test_path(f)]
     ems = [m for m in _em_now(project, prof, bid, b) if m["status_now"] == "active"]
-    states = UV.evaluate_states(now_brief, run, UV.state_mentions(project, tests), ems)
+    tt = UV.touched_targets(now_brief, uplan) if now_brief.get("touched") else None
+    states = UV.evaluate_states(now_brief, run, UV.state_mentions(project, tests), ems, tt)
     browser = UV.browser_summary(run, prof["verify"]["steps"], now_brief, (prof.get("browser") or {}).get("viewports") or [])
     links = UV.ac_links(now_brief, uplan, ev, states)
     tokens = {}
@@ -2054,10 +2072,13 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
         W.append(f"직접 값 {ta['counts']['findings']}건(감사 mode=warn, 차단 아님)")
     components = _ui_component_checks(project, st, plan, bid, uprof, uplan, umap, now_brief, R, W)
     for sid, r in states.items():
+        if r.get("scope") == "touched":
+            continue  # touches 대표 상태는 아래(최종 UI 승인 조건)
         if r["required"] and r["status"] != "verified":
             R.append(f"[state_evidence] {sid}(필수 상태, 목표 E2): {r['status']} — {r['reason']}")
         elif not r["required"] and r["status"] != "verified":
             W.append(f"{sid}(필수 아님): {r['status']}")
+    touched = _touched_summary(now_brief, uplan, tt, states, W) if tt is not None else None
     R += [f"[browser] {x}" for x in browser["blocking"]]
     W += browser["warnings"]
     for ac, l in links.items():
@@ -2065,8 +2086,12 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
             W.append(f"{ac}: AC는 verified인데 연결된 상태 {', '.join(l['gaps'])}의 증거가 부족합니다")
     blockers = list(browser["final_approval_blockers"]) + [f"{sid}: 필수 상태 {r['status']}" for sid, r in states.items()
                                                            if r["required"] and r["status"] != "verified"]
+    if touched is not None:
+        blockers += touched["blockers"]
+        res["touched"] = touched
     res.update(brief_digest=now_brief["digest"], ui_plan_sha=plan_sha, ui_plan_validated=validated,
-               basis=UV.current_basis(project, list(now_brief["screens"]), uplan, umap),
+               basis=UV.current_basis(project, list(now_brief["screens"]), uplan, umap,
+                                      sorted(now_brief["touched"]["screens"]) if now_brief.get("touched") else None),
                code={"run_id": run["run_id"], "at": run["at"], "valid": run["valid"], "code_tree": run["tree_after"],
                      "code_only_tree": run.get("code_only_tree"), "head": head_sha(project)},
                states=states, ac_links=links, browser=browser, tokens=tokens, components=components,
@@ -2078,12 +2103,33 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
     return res
 
 
+def _touched_summary(brief: dict, uplan: dict | None, tt: dict, states: dict, W: list[str]) -> dict:
+    """touches 화면 증거 요약과 최종 UI 승인 차단(대표 상태 증거 없음·계획 없음). verify 자체는 실패시키지 않습니다(설계 §4)."""
+    blockers, screens = [], {}
+    for s, info in tt["screens"].items():
+        rec = {k: info.get(k) for k in ("mode", "via", "covered_by", "exempt", "changes") if info.get(k) is not None}
+        if info["mode"] == "representative":
+            rec["states"] = {x: {"status": states[x]["status"], "level": states[x]["level"]} for x in info["states"]}
+            for x in info["states"]:
+                if states[x]["status"] != "verified":
+                    msg = f"{x}(touches 대표 상태, 목표 E2 또는 EM): {states[x]['status']} — {states[x]['reason']}"
+                    W.append(f"[touched_evidence] {msg}")
+                    blockers.append(f"[touched_evidence] {msg}")
+        elif info["mode"] == "unplanned":
+            msg = f"{s}: touches 화면의 계획(UI Plan touched)이 없어 증거 대상을 정할 수 없습니다"
+            W.append(f"[touched_unplanned] {msg}")
+            blockers.append(f"[touched_unplanned] {msg}")
+        screens[s] = rec
+    return {"rules": U.TOUCHED_RULES, "screens": screens, "blockers": blockers,
+            "counts": {m: sum(1 for x in tt["screens"].values() if x["mode"] == m) for m in ("representative", "covered", "exempt", "unplanned")}}
+
+
 def _ui_compact(ui: dict) -> dict:
     return {"states": {k: {x: v.get(x) for x in ("status", "level", "required", "target")} for k, v in (ui.get("states") or {}).items()},
             "browser": {k: (ui.get("browser") or {}).get(k) for k in ("status", "steps", "blocking", "final_approval_blockers", "coverage")},
             "tokens": {k: {x: v.get(x) for x in ("ok", "status", "counts", "mode", "error")} for k, v in (ui.get("tokens") or {}).items()},
             "ac_links": ui.get("ac_links"), "reasons": ui.get("reasons"), "warnings": ui.get("warnings"),
-            "final_approval_blockers": ui.get("final_approval_blockers")}
+            "final_approval_blockers": ui.get("final_approval_blockers"), **({"touched": ui["touched"]} if ui.get("touched") else {})}
 
 
 def cmd_evidence_manual(a) -> None:
@@ -2128,10 +2174,11 @@ def cmd_evidence_manual(a) -> None:
             brief = U.read_json(project, U.ui_rel(a.batch, "brief.json"))
             if not brief or brief.get("_invalid") or not U.brief_intact(brief):
                 block("no_ui_brief", f"상태 증거는 UI Brief의 정의된 상태에만 기록합니다(ui-brief --batch {a.batch}).")
-            defined = {x["id"] for sb in brief["screens"].values() for x in sb["states"] if x["defined"]}
+            touched_scr = ((brief.get("touched") or {}).get("screens")) or {}
+            defined = {x["id"] for sb in list(brief["screens"].values()) + list(touched_scr.values()) for x in sb["states"] if x["defined"]}
             unknown = [x for x in states if x not in defined]
             if unknown:
-                block("unknown_state", "이 배치 화면의 정의된 상태가 아닙니다(02 문서).", states=unknown)
+                block("unknown_state", "이 배치 화면(소유·touches)의 정의된 상태가 아닙니다(02 문서).", states=unknown)
         files = []
         for f in a.file or []:
             if U.bad_path(f) or not (project / f).is_file():
@@ -2187,11 +2234,12 @@ def cmd_ui_evidence(a) -> None:
     out = {"ok": True, "batch": a.batch, "status": b["status"], "ui_flow": _ui_active(project, a.batch)}
     if ui and ui.get("basis"):
         uplan, umap = _ui_inputs(project, a.batch)
-        ch = UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap))
+        ch = UV.basis_changes(ui["basis"], UV.current_basis(project, list(ui["basis"]["screens"]), uplan, umap, UV.basis_touched(ui["basis"])))
         out["verification"] = {"run_id": v.get("run_id"), "at": v.get("at"), "code": ui.get("code"), **_ui_compact(ui),
                                "evidence": {k: {x: r.get(x) for x in ("status", "level", "required", "evidence", "manual", "reason")}
                                             for k, r in (ui.get("states") or {}).items()}}
-        out["affected_now"] = {"screens": ch["screens"], "states": sorted(k for k, r in (ui.get("states") or {}).items() if r["screen"] in ch["screens"]),
+        out["affected_now"] = {"screens": ch["screens"] + ch["touched"],
+                               "states": sorted(k for k, r in (ui.get("states") or {}).items() if r["screen"] in ch["screens"] + ch["touched"]),
                                "tokens": ch["tokens"], "ui_plan_components": ch["ui_plan_components"]}
         out["freshness_problem"] = freshness(project, prof, a.batch, b, _plan_batches(project).get(a.batch))
     else:

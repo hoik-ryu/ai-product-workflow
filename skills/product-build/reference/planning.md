@@ -78,7 +78,7 @@
   - 다른 부품(새로 만들어야 함): `ledger add --type policy`로 근거를 남기고 `decide --confirm --note '<사용자 문장>'`으로 결정받은 뒤 `components.new_reasons`에 `{CMP: 원장 ID}`를 적습니다. 결정(`decided`·`closed`)된 policy·deviation 항목만 인정하고, 계획 승인에 함께 포함됩니다(별도 승인 단계 없음). 결과에 경고 `new_despite_candidate`로 남습니다.
 
 - 배치 목록 순서가 **실행 순서**입니다.
-- 화면은 한 배치만 **소유**(`screens`)합니다. 다른 배치가 고치면 `touches`에 둡니다.
+- 화면은 한 배치만 **소유**(`screens`)합니다. 다른 배치가 고치면 `touches`에 둡니다. UI 배치의 touches 화면은 UI Plan `touched`로 변경 내용·대표 화면·증거를 계획합니다(`reference/ui.md` §4.1).
 - `risk_tags`: `security`, `permission`, `data_loss`, `schema_migration`, `external_contract`, `privacy`, `spec_change`.
 
 ## 4. 검증 규칙(`plan-validate`, `submit plan`·`approve plan`도 같은 규칙)

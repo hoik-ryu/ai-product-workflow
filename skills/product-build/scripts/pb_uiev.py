@@ -169,7 +169,8 @@ def browser_summary(run: dict, prof_steps: list[dict], brief: dict, viewports: l
     steps, blocking, warnings, results, blockers = {}, [], [], [], []
     vp_names = {v if isinstance(v, str) else (v or {}).get("name") for v in (viewports or [])} - {None}
     actions = {s: {a["action"] for a in sb["actions"]} for s, sb in brief["screens"].items()}
-    defined = {x["id"] for sb in brief["screens"].values() for x in sb["states"] if x["defined"]}
+    touched_scr = ((brief.get("touched") or {}).get("screens")) or {}
+    defined = {x["id"] for sb in list(brief["screens"].values()) + list(touched_scr.values()) for x in sb["states"] if x["defined"]}
     for s in run["steps"]:
         if s["name"] not in ui_steps:
             continue
@@ -184,8 +185,8 @@ def browser_summary(run: dict, prof_steps: list[dict], brief: dict, viewports: l
         for r in (s.get("ui_report") or {}).get("results", []):
             results.append({"step": s["name"], **{k: r[k] for k in ("screen", "state", "viewport", "blocking", "warnings", "acs", "screenshot")}})
             tag = f"{r['state'] or r['screen']}@{r['viewport']}"
-            if r["screen"] not in brief["screens"]:
-                warnings.append(f"{tag}: 이 배치가 소유한 화면이 아닙니다(증거로 쓰지 않음)")
+            if r["screen"] not in brief["screens"] and r["screen"] not in touched_scr:
+                warnings.append(f"{tag}: 이 배치가 소유하거나 바꾸는(touches) 화면이 아닙니다(증거로 쓰지 않음)")
             if r["state"] and r["state"] not in defined:
                 warnings.append(f"{tag}: 02 문서에 정의된 상태가 아닙니다")
             if vp_names and r["viewport"] not in vp_names:
@@ -218,8 +219,61 @@ def browser_summary(run: dict, prof_steps: list[dict], brief: dict, viewports: l
 
 
 # ---------------------------------------------------------------- 상태 증거 판정(M3.3)
-def evaluate_states(brief: dict, run: dict, mentioned: set[str], manual: list[dict]) -> dict:
-    """정의된 상태별: verified / insufficient / failing / not_run / untested / manual_only / invalid_run."""
+def touched_targets(brief: dict, uplan: dict | None) -> dict:
+    """touches 화면별 증거 방식(대표·위임·예외·미계획)과 증거 대상 상태. UI Plan `touched`가 없으면 모두 미계획(unplanned)입니다."""
+    tb = ((brief.get("touched") or {}).get("screens")) or {}
+    tp = (uplan or {}).get("touched") if isinstance((uplan or {}).get("touched"), dict) else {}
+    screens, states = {}, {}
+    for s, info in tb.items():
+        p = tp.get(s) if isinstance(tp.get(s), dict) else None
+        defined = {x["id"]: x for x in info["states"] if x["defined"]}
+        if p is None:
+            screens[s] = {"mode": "unplanned", "via": [], "states": []}
+            continue
+        sts = [x for x in (p.get("states") or {}) if x in defined] if isinstance(p.get("states"), dict) else []
+        mode = "exempt" if p.get("exempt") else ("representative" if sts else ("covered" if p.get("covered_by") else "unplanned"))
+        screens[s] = {"mode": mode, "via": [x for x in p.get("via") or [] if isinstance(x, str)], "states": sts if mode == "representative" else [],
+                      "covered_by": p.get("covered_by") if mode == "covered" else None, "exempt": p.get("exempt") if mode == "exempt" else None,
+                      "changes": str(p.get("changes") or "")[:300]}
+        for x in screens[s]["states"]:
+            states[x] = {"screen": s, "label": defined[x]["label"]}
+    return {"screens": screens, "states": states, "planned": bool(tp)}
+
+
+def _state_record(st: str, sid: str, label: str, required: bool, target: str, run: dict, cases: list, mentioned: set[str],
+                  manual: list[dict], not_run: list[str], broken: list[str], em_counts: bool) -> dict:
+    """상태 하나의 판정. em_counts: 수동 증거(EM)로 충족되는지(소유 필수 상태는 False — E2 필요)."""
+    mine = [(n, c) for n, c in cases if st in (c.get("states") or [])]
+    ems = [m for m in manual if st in m["targets"]["states"]]
+    rec = {"screen": sid, "label": label, "required": required, "target": target,
+           "evidence": [{"source": "browser" if c["id"].startswith("ui::") else "test", "step": n, "case": c["id"], "status": c["status"],
+                         "run_id": run["run_id"], "at": run["at"], "code_tree": run.get("code_only_tree")} for n, c in mine][:12],
+           "manual": [{"id": m["id"], "result": m["result"], "method": m["method"], "at": m["at"]} for m in ems]}
+    if not run["valid"]:
+        rec.update(status="invalid_run", level="E0", reason=run.get("invalid_reason"))
+    elif any(c["status"] in ("failed", "error") for _, c in mine):
+        rec.update(status="failing", level="E1", reason="태그된 테스트·브라우저 결과 실패: " + ", ".join(c["id"] for _, c in mine if c["status"] in ("failed", "error"))[:300])
+    elif any(m["result"] == "failed" for m in ems):
+        rec.update(status="failing", level="EM", reason="수동 확인 실패 기록: " + ", ".join(m["id"] for m in ems if m["result"] == "failed"))
+    elif mine and all(c["status"] == "skipped" for _, c in mine):
+        rec.update(status="not_run", level="E1", reason="태그된 테스트가 모두 건너뛰어짐(skipped)")
+    elif mine:
+        rec.update(status="verified", level="E2", reason="태그된 테스트·브라우저 결과 통과(E2)")
+    else:
+        level = "E1" if st in mentioned else "E0"
+        if ems:
+            rec.update(level="EM", status="verified" if em_counts else "manual_only",
+                       reason="수동 확인(EM)" if em_counts else "수동 확인만 있음 — 필수 상태는 실행 증거(E2)가 필요합니다")
+        elif not_run or broken:
+            rec.update(level=level, status="not_run", reason="태그된 결과 없음 — 실행되지 않은 단계: " + ", ".join(not_run + broken))
+        else:
+            rec.update(level=level, status="untested", reason="상태 태그된 테스트 없음" + (" (테스트에 언급만 있음: E1)" if level == "E1" else ""))
+    return rec
+
+
+def evaluate_states(brief: dict, run: dict, mentioned: set[str], manual: list[dict], touched: dict | None = None) -> dict:
+    """정의된 상태별: verified / insufficient / failing / not_run / untested / manual_only / invalid_run.
+    touched(touched_targets 결과)가 있으면 touches 대표 상태도 판정합니다(scope: touched, E2 또는 EM이면 충족)."""
     steps = run["steps"]
     not_run = [s["name"] for s in steps if s["status"] == "not_run" and not s.get("optional")]
     broken = [s["name"] for s in steps if s["status"] in ("report_invalid", "report_empty", "inconsistent", "timeout") and not s.get("optional")]
@@ -229,34 +283,14 @@ def evaluate_states(brief: dict, run: dict, mentioned: set[str], manual: list[di
         for x in sb["states"]:
             if not x["defined"]:
                 continue
-            st = x["id"]
-            target = REQUIRED_TARGET if x["required"] else "advisory"
-            mine = [(n, c) for n, c in cases if st in (c.get("states") or [])]
-            ems = [m for m in manual if st in m["targets"]["states"]]
-            rec = {"screen": sid, "label": x["label"], "required": x["required"], "target": target,
-                   "evidence": [{"source": "browser" if c["id"].startswith("ui::") else "test", "step": n, "case": c["id"], "status": c["status"],
-                                 "run_id": run["run_id"], "at": run["at"], "code_tree": run.get("code_only_tree")} for n, c in mine][:12],
-                   "manual": [{"id": m["id"], "result": m["result"], "method": m["method"], "at": m["at"]} for m in ems]}
-            if not run["valid"]:
-                rec.update(status="invalid_run", level="E0", reason=run.get("invalid_reason"))
-            elif any(c["status"] in ("failed", "error") for _, c in mine):
-                rec.update(status="failing", level="E1", reason="태그된 테스트·브라우저 결과 실패: " + ", ".join(c["id"] for _, c in mine if c["status"] in ("failed", "error"))[:300])
-            elif any(m["result"] == "failed" for m in ems):
-                rec.update(status="failing", level="EM", reason="수동 확인 실패 기록: " + ", ".join(m["id"] for m in ems if m["result"] == "failed"))
-            elif mine and all(c["status"] == "skipped" for _, c in mine):
-                rec.update(status="not_run", level="E1", reason="태그된 테스트가 모두 건너뛰어짐(skipped)")
-            elif mine:
-                rec.update(status="verified", level="E2", reason="태그된 테스트·브라우저 결과 통과(E2)")
-            else:
-                level = "E1" if st in mentioned else "E0"
-                if ems:
-                    rec.update(level="EM", status="manual_only" if x["required"] else "verified",
-                               reason=("수동 확인만 있음 — 필수 상태는 실행 증거(E2)가 필요합니다" if x["required"] else "수동 확인(EM)"))
-                elif not_run or broken:
-                    rec.update(level=level, status="not_run", reason="태그된 결과 없음 — 실행되지 않은 단계: " + ", ".join(not_run + broken))
-                else:
-                    rec.update(level=level, status="untested", reason="상태 태그된 테스트 없음" + (" (테스트에 언급만 있음: E1)" if level == "E1" else ""))
-            out[st] = rec
+            out[x["id"]] = _state_record(x["id"], sid, x["label"], x["required"], REQUIRED_TARGET if x["required"] else "advisory",
+                                         run, cases, mentioned, manual, not_run, broken, em_counts=not x["required"])
+    for st, info in ((touched or {}).get("states") or {}).items():
+        if st in out:
+            continue
+        rec = _state_record(st, info["screen"], info["label"], False, "E2|EM", run, cases, mentioned, manual, not_run, broken, em_counts=True)
+        rec.update(scope="touched", touched_required=True)
+        out[st] = rec
     return out
 
 
@@ -266,7 +300,13 @@ def ac_links(brief: dict, uplan: dict | None, ac_eval: dict, states: dict) -> di
     for sb in brief["screens"].values():
         for a in sb["acs"]:
             links.setdefault(a["id"], set()).update(a["states"])
-    for sp in ((uplan or {}).get("screens") or {}).values():
+    for t in (((brief.get("touched") or {}).get("screens")) or {}).values():
+        for a in t["acs"]:
+            links.setdefault(a["id"], set()).update(a["states"])
+    sections = list(((uplan or {}).get("screens") or {}).values())
+    if isinstance((uplan or {}).get("touched"), dict):
+        sections += list(uplan["touched"].values())
+    for sp in sections:
         if isinstance(sp, dict) and isinstance(sp.get("acs"), dict):
             for a, v in sp["acs"].items():
                 if isinstance(v, dict):
@@ -300,6 +340,8 @@ def screen_basis(project: Path, sid: str, uplan: dict | None, umap: dict | None)
     vds = [v for v in _vd_related(project) if sid in v["related"] or set(cmps) & set(re.findall(r"CMP-\d{3}", v["related"]))]
     mapping = {c: ((umap or {}).get("components") or {}).get(c) for c in cmps}
     sp = ((uplan or {}).get("screens") or {}).get(sid)
+    if sp is None and isinstance((uplan or {}).get("touched"), dict):  # touches 화면은 UI Plan touched 항목이 계획(소유 화면 값은 그대로)
+        sp = uplan["touched"].get(sid)
     return digest({"block": sinfo["block"], "acs": ac_rows, "vds": vds, "cmps": {c: c04.get(c) for c in cmps}, "map": mapping, "plan": sp})
 
 
@@ -314,15 +356,25 @@ def tokens_basis(project: Path, umap: dict | None) -> str:
                    "token_exceptions": ex.get("tokens") or [], "audit_exceptions": ex.get("audit") or []})
 
 
-def current_basis(project: Path, screens: list[str], uplan: dict | None, umap: dict | None) -> dict:
-    return {"screens": {s: screen_basis(project, s, uplan, umap) for s in screens}, "tokens": tokens_basis(project, umap),
-            "ui_plan_components": digest((uplan or {}).get("components"))}
+def current_basis(project: Path, screens: list[str], uplan: dict | None, umap: dict | None, touched: list[str] | None = None) -> dict:
+    """touched(touches 화면 목록)가 None이면 키를 만들지 않습니다(이전 검증 기록과 같은 형태)."""
+    out = {"screens": {s: screen_basis(project, s, uplan, umap) for s in screens}, "tokens": tokens_basis(project, umap),
+           "ui_plan_components": digest((uplan or {}).get("components"))}
+    if touched is not None:
+        out["touched"] = {s: screen_basis(project, s, uplan, umap) for s in touched}
+    return out
+
+
+def basis_touched(basis: dict | None) -> list[str] | None:
+    """저장된 기준의 touches 화면 목록. 이전 기록(touched 키 없음)이면 None — 비교하지 않습니다."""
+    return list(basis["touched"]) if isinstance((basis or {}).get("touched"), dict) else None
 
 
 def basis_changes(old: dict, new: dict) -> dict:
     ch = {"screens": sorted(s for s, h in (old.get("screens") or {}).items() if (new.get("screens") or {}).get(s) != h)}
     ch["tokens"] = old.get("tokens") != new.get("tokens")
     ch["ui_plan_components"] = old.get("ui_plan_components") != new.get("ui_plan_components")
+    ch["touched"] = sorted(s for s, h in (old.get("touched") or {}).items() if (new.get("touched") or {}).get(s) != h)
     return ch
 
 
@@ -330,6 +382,8 @@ def describe_changes(ch: dict) -> str | None:
     parts = []
     if ch["screens"]:
         parts.append("화면 입력(02 명세·AC·디자인 결정·컴포넌트·UI Plan): " + ", ".join(ch["screens"]))
+    if ch.get("touched"):
+        parts.append("touches 화면 입력(02 명세·AC·디자인 결정·UI Plan touched): " + ", ".join(ch["touched"]))
     if ch["tokens"]:
         parts.append("토큰 기준(승인 토큰·출력 설정·허용 예외)")
     if ch["ui_plan_components"]:

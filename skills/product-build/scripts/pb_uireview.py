@@ -95,6 +95,7 @@ def build_review(bid: str, b: dict, plan_batch: dict, freshness_problem: str | N
     for sid, r in sorted(states.items()):
         scr = screens.setdefault(r["screen"], {"states": {}, "acs": {}})
         scr["states"][sid] = {"label": r.get("label"), "required": r["required"], "status": r["status"], "level": r.get("level"),
+                              **({"scope": "touched", "target": r.get("target")} if r.get("scope") == "touched" else {}),
                               "sources": sorted({e["source"] for e in r.get("evidence") or []}),
                               "manual": [m["id"] for m in r.get("manual") or []],
                               "browser": [{k: x.get(k) for k in ("viewport", "blocking", "warnings", "screenshot")} for x in results if x.get("state") == sid]}
@@ -120,6 +121,18 @@ def build_review(bid: str, b: dict, plan_batch: dict, freshness_problem: str | N
     if (ui.get("browser") or {}).get("status") == "browser_pending":
         blockers.append("필수 브라우저 검증이 실행되지 않았습니다(browser_pending)")
     blockers += [f"{sid}: 필수 상태 {r['status']}(E2 필요)" for sid, r in states.items() if r["required"] and r["status"] != "verified"]
+    touched = ui.get("touched")
+    review_warnings = list(ui.get("warnings") or [])
+    if touched:
+        blockers += touched.get("blockers") or []
+        for s, x in (touched.get("screens") or {}).items():  # 위임·예외 화면도 검토 묶음에 보입니다
+            scr = screens.setdefault(s, {"states": {}, "acs": {}})
+            scr["touched"] = {k: x.get(k) for k in ("mode", "via", "covered_by", "exempt", "changes") if x.get(k) is not None}
+    elif ui and plan_batch.get("touches"):
+        review_warnings.append("[touched_not_evaluated] touches 화면 증거 판정 이전의 검증입니다(이전 엔진). "
+                               f"touches 화면({', '.join(plan_batch['touches'])})의 증거는 판정되지 않았습니다. 다시 verify하면 판정합니다")
+    if ui and not any(r.get("status") == "verified" for r in states.values()) and not results and not em_now:
+        review_warnings.append("[evidence_empty] 화면 증거가 하나도 없습니다(상태 증거·브라우저 결과·수동 확인 0건). 사용자가 볼 시각 근거가 없는 묶음입니다")
     if ui and not ui.get("ui_plan_validated"):
         blockers.append("UI Plan이 현재 Brief 기준으로 검증되지 않았습니다")
     if token_now is not None and not token_now.get("ok"):
@@ -136,7 +149,9 @@ def build_review(bid: str, b: dict, plan_batch: dict, freshness_problem: str | N
             "screens": screens, "browser": {k: (ui.get("browser") or {}).get(k) for k in ("status", "steps", "blocking", "warnings", "coverage")},
             "tokens": {"at_verify": (ui.get("tokens") or {}).get("check"), "now": token_now, "audit": (ui.get("tokens") or {}).get("audit")},
             "components": comps, "manual": [{k: m.get(k) for k in ("id", "targets", "method", "result", "status_now")} for m in em_now],
-            "feedback": fbs, "warnings": ui.get("warnings") or [], "blockers": blockers}
+            "feedback": fbs, "warnings": review_warnings, "blockers": blockers}
+    if touched:
+        body["touched"] = {k: touched.get(k) for k in ("rules", "counts")}
     body["review_id"] = digest(body)[:16]
     body["ready"] = not blockers
     return body
