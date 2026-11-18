@@ -81,8 +81,7 @@ def approved_project(root: Path, name: str) -> Path:
     shutil.copy(TEMPLATE, sp(d))
     ps(d, "event", "--stage", "discovery", "--event", "started", "--revision", "0")
     doc(d, "docs/planning/01-discovery.md", 1)
-    edit(d, r"(  discovery:\n    status:) in_progress", r"\1 awaiting_approval")
-    edit(d, r"(  discovery:\n.*?\n    revision:) 0", r"\1 1")
+    assert ps(d, "submit", "--stage", "discovery", "--revision", "1", "--confirm")[0] == 0  # T2는 submit으로만(제출 스냅샷)
     assert ps(d, "approve", "--stage", "discovery", "--revision", "1")[0] == 0
     for f in PLANNING:
         doc(d, f, 1)

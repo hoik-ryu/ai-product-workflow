@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pb_ui as U
 from pb_core import (
-    DESIGN_STATE_REL, PROFILE_REL, UISYS_FILE, WORKFLOW_STATE_REL, Blocked, block, design_info, digest, is_protected, sha256_bytes,
+    DESIGN_STATE_REL, PROFILE_REL, UISYS_FILE, WORKFLOW_STATE_REL, Blocked, block, design_info, digest, is_protected, read_design_state, sha256_bytes,
 )
 from pb_exec import in_patterns
 from pb_scan import MAX_FILE_BYTES, is_test_path
@@ -274,6 +274,9 @@ def evaluate(project: Path, snap: dict, mode: str, base_sha: str | None, ctx: di
                 if f["sha"] and approved.get(rel) == f["sha"]:
                     protected["approved_change"].append(rel)
                     info.append(f"{rel}: 승인된 내용과 같습니다(승인 기록의 해시 일치)")
+                elif U.is_design_explore(rel):  # 디자인 탐색 시안은 /product-design 작업 공간(승인 대상 아님): 경고만, 제품 코드 사용은 verify가 차단
+                    protected["changed"].append(rel)
+                    warn("design_explore_changed", f"{rel}: 디자인 탐색 시안은 /product-design 소유입니다. 제품 코드에서 참조·복사하지 않습니다")
                 elif U.is_preview(rel) and ctx["preview_status"] != "approved":
                     protected["changed"].append(rel)
                     warn("preview_changed", f"{rel}: 디자인 프리뷰는 /product-design 소유입니다(프리뷰 단계 {ctx['preview_status'] or '없음'}). 제품 코드에서 쓰지 않습니다")
@@ -284,11 +287,15 @@ def evaluate(project: Path, snap: dict, mode: str, base_sha: str | None, ctx: di
     # 3) 토큰 정본(전역, 항상 오류)
     try:
         tc = U.token_check(project, umap)
+        if tc.get("theme_changed_since_approval"):
+            ta = tc["theme_approval"]
+            err("theme_changed", f"{ta['theme_file']}: 승인({ta['stage']} r{ta.get('approved_revision')}) 당시 테마와 다릅니다 — 현재 테마 값은 승인값이 아닙니다")
+        label = "현재 테마값(승인 이후 바뀜, 승인값 아님)" if tc.get("theme_changed_since_approval") else "승인값"
         for x in tc["missing"] + tc["mismatch"]:
-            err("token_mismatch", f"{x['token']}: 승인값 {x['expected']}, 토큰 CSS {x.get('actual', '없음')}")
+            err("token_mismatch", f"{x['token']}: {label} {x['expected']}, 토큰 CSS {x.get('actual', '없음')}")
         for t in tc.get("stale_exceptions") or []:
             warn("stale_token_exception", f"{t}: 정본에 없는 토큰의 예외가 남아 있습니다")
-        tokens = {k: tc.get(k) for k in ("ok", "source", "file", "counts", "missing", "mismatch", "excepted")}
+        tokens = {k: tc.get(k) for k in ("ok", "source", "file", "counts", "missing", "mismatch", "excepted", "theme_approval", "expected_basis")}
     except Blocked as e:
         err("token_check_failed", f"{e.payload.get('error')}: {e.payload.get('message')}")
         tokens = {"ok": False, "error": e.payload.get("error")}
@@ -304,6 +311,19 @@ def evaluate(project: Path, snap: dict, mode: str, base_sha: str | None, ctx: di
     except Blocked as e:
         err("map_integrity", f"{e.payload.get('error')}: {e.payload.get('message')}")
         mapinfo = {"ok": False}
+
+    # 4b) 디자인 탐색 격리·공식 디자인(EX6, /product-design preview-check와 같은 pd_guard 규칙): 소스 범위의 코드·이미지 파일과 토큰 출력 파일
+    scope = sorted(set(U.walk(project, ctx["roots"] or None, ctx["exclude"] + [U.PREVIEW_DIR, U.EXPLORE_DIR],
+                              set(ctx["exts"]) | set(U.GD.TEXT_EXTS) | set(U.GD.IMAGE_EXTS)))
+                   | ({ctx["token_file"]} if ctx.get("token_file") and (project / ctx["token_file"]).is_file() else set()))
+    if mode in ("changed", "path"):  # 변경 파일·지정 경로 전부(소스 범위 밖 페이지·자산 폴더도), 전체 감사는 소스 범위 전체
+        xexts = tuple(sorted(set(U.GD.TEXT_EXTS) | set(U.GD.IMAGE_EXTS) | {str(e).lower() for e in ctx["exts"]}))  # 전체 감사와 같은 확장자(프로젝트 UI 확장자 포함)
+        scope = sorted(r for r in files if r.lower().endswith(xexts) and not U.is_preview(r)
+                       and not U.is_design_explore(r) and (project / r).is_file())
+    xf = U.explore_findings(project, scope) + U.GD.symlink_findings(project, list(ctx["roots"] or []))
+    for x in xf:
+        err(x["kind"], U.GD.message(x))
+    exploration = {"checked": len(scope), "findings": xf}
 
     # 5) 대상 파일: 직접 값·부품
     targets = [r for r, f in files.items() if f["kind"] in ("ui", "component") and r in texts]
@@ -381,16 +401,13 @@ def evaluate(project: Path, snap: dict, mode: str, base_sha: str | None, ctx: di
             warn("staged_differs", f"{rel}: stage된 뒤 다시 수정되었습니다. 검사는 작업 트리 내용 기준입니다(커밋될 내용과 다를 수 있음)")
     for s in snap["skipped"]:
         warn("skipped_file", f"{s['path']}: 검사하지 않음({s['reason']})")
-    return {"errors": E, "warnings": W, "codes": codes, "legacy": legacy, "info": info, "design": design, "protected": protected,
+    return {"exploration": exploration, "errors": E, "warnings": W, "codes": codes, "legacy": legacy, "info": info, "design": design, "protected": protected,
             "tokens": tokens, "audit": {**audit, "counts": {k: len(audit[k]) for k in ("findings", "legacy", "excepted")}},
             "map": mapinfo, "components": comp_out}
 
 
 def context(project: Path, prof: dict, uprof: dict, umap: dict, gate: dict) -> dict:
-    try:
-        dst = json.loads((project / DESIGN_STATE_REL).read_text(encoding="utf-8")) if (project / DESIGN_STATE_REL).exists() else {}
-    except json.JSONDecodeError:
-        dst = {}
+    dst = read_design_state(project)
     approved = {k: v for k, v in (gate.get("planning_hashes") or {}).items() if v}
     for s in (dst.get("stages") or {}).values():
         if (s or {}).get("status") == "approved" and isinstance(s.get("approved"), dict):
@@ -434,7 +451,7 @@ def run_guard(project: Path, mode: str, base: str, paths: list[str] | None, stri
            "design": res["design"],
            "files": [{"path": k, **{x: v[x] for x in ("state", "status", "kind")}} for k, v in snap["files"].items()],
            "checks": {"protected": res["protected"], "tokens": res["tokens"], "audit": res["audit"], "map": res["map"],
-                      "components": res["components"]},
+                      "components": res["components"], "exploration": res.get("exploration")},
            "errors": res["errors"], "warnings": res["warnings"], "info": res["info"],
            "legacy": {"count": len(res["legacy"]), "items": res["legacy"][:200],
                       "note": "base에 이미 있던 위반입니다. 이번 변경을 실패시키지 않습니다(--all로 전체 감사)."} if mode == "changed" else None,

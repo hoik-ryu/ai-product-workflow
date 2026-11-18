@@ -97,8 +97,7 @@ def submitted_project(root: Path, name: str) -> Path:
     shutil.copy(TEMPLATE, sp(d))
     ps(d, "event", "--stage", "discovery", "--event", "started", "--revision", "0")
     doc(d, "docs/planning/01-discovery.md", 1, "디스커버리")
-    edit(d, r"(  discovery:\n    status:) in_progress", r"\1 awaiting_approval")
-    edit(d, r"(  discovery:\n.*?\n    revision:) 0", r"\1 1")
+    assert ps(d, "submit", "--stage", "discovery", "--revision", "1", "--confirm")[0] == 0  # T2는 submit으로만(제출 스냅샷)
     assert ps(d, "approve", "--stage", "discovery", "--revision", "1")[0] == 0
     edit(d, r"(  planning:\n    status:) not_started", r"\1 in_progress")
     edit(d, r"based_on_discovery_revision: null", "based_on_discovery_revision: 1")
@@ -113,7 +112,7 @@ def legacy_project(root: Path, name: str, keep_empty_block: bool = False) -> Pat
     """스냅샷 도입 이전 submit으로 제출된 상태 재현: 스냅샷 블록이 없음(또는 비어 있음), history에는 제출 해시 앞 8자."""
     d = submitted_project(root, name)
     repl = "    submitted:\n      revision: null\n      at: null\n      hashes: {}\n" if keep_empty_block else ""
-    edit(d, r"^    submitted:[^\n]*\n(?:      [^\n]*\n)*", repl)
+    edit(d, r"(  planning:\n(?:[^\n]*\n)*?)    submitted:[^\n]*\n(?:      [^\n]*\n)*", lambda m: m.group(1) + repl)  # planning 스냅샷만(discovery 블록은 그대로)
     return d
 
 
@@ -257,7 +256,7 @@ def main() -> int:
               and all(f"        {f}: {sha(lg / f)}" in snap for f in PLANNING), (mg, snap))
         check("V27 migrate-snapshot은 상태·revision·history를 바꾸지 않음(스냅샷 블록만 추가)",
               status(text, "planning") == "awaiting_approval" and re.findall(r"^  - \{.*\}$", text, re.M) == before_hist
-              and re.sub(r"^    submitted:[^\n]*\n(?:      [^\n]*\n)*", "", text, flags=re.M) == legacy_raw.decode("utf-8"), text[-600:])
+              and re.sub(r"(  planning:\n(?:[^\n]*\n)*?)    submitted:[^\n]*\n(?:      [^\n]*\n)*", r"\1", text, count=1) == legacy_raw.decode("utf-8"), text[-600:])
         code, out, same = unchanged_after(lg, *MIGRATE1)
         check("V28 이미 스냅샷이 있으면 다시 마이그레이션 안 함", code == 2 and out["error"] == "snapshot_exists" and same, out)
         code, ap = ps(lg, *APPROVE1)
@@ -271,12 +270,12 @@ def main() -> int:
         check("V30 기존 제출 후 문서가 바뀌었으면 마이그레이션 거부(changed_since_submission), 무변경",
               code == 2 and out["error"] == "changed_since_submission" and out["files"][0]["file"] == PLANNING[2] and same, out)
         lm = legacy_project(root, "legacy-manual")
-        edit(lm, r'(event: submitted, revision: 1, note: ")[^"]*(", src: engine \})', r"\1r1 제출\2")
+        edit(lm, r'(stage: planning, event: submitted, revision: 1, note: ")[^"]*(", src: engine \})', r"\1r1 제출\2")
         code, out, same = unchanged_after(lm, *MIGRATE1)
         check("V31 제출 해시가 기록되지 않은 기존 제출(수동 등)은 확인 불가로 거부(snapshot_unverifiable), 무변경",
               code == 2 and out["error"] == "snapshot_unverifiable" and same, out)
         ln = legacy_project(root, "legacy-legacy-line")
-        edit(ln, r"(event: submitted, revision: 1, note: \"[^\"]*\"), src: engine \}", r"\1 }")
+        edit(ln, r"(stage: planning, event: submitted, revision: 1, note: \"[^\"]*\"), src: engine \}", r"\1 }")
         code, out, same = unchanged_after(ln, *MIGRATE1)
         check("V32 스크립트가 남기지 않은 submitted 기록(src 표지 없음)은 근거로 쓰지 않음", code == 2 and out["error"] == "snapshot_unverifiable" and same, out)
 
@@ -285,7 +284,7 @@ def main() -> int:
         assert ps(ab, *APPROVE1)[0] == 0
         raw = state(ab)
         h = sha(ab / PLANNING[0])
-        edit(ab, r"^(    submitted:[^\n]*\n)      revision: null\n      at: null\n      hashes: \{\}",
+        edit(ab, r"(  planning:\n(?:[^\n]*\n)*?    submitted:[^\n]*\n)      revision: null\n      at: null\n      hashes: \{\}",
              r'\1      revision: 1\n      at: "2026-01-01T00:00:00Z"\n      hashes:\n        ' + PLANNING[0] + ": " + h)
         code, chk = ps(ab, "check")
         check("V33 approved 상태에 스냅샷이 남아 있으면 check 문제로 보고", code == 2 and any("스냅샷이 비어 있지 않습니다" in p for p in chk["problems"]), chk)
@@ -298,7 +297,7 @@ def main() -> int:
         code, out, same = unchanged_after(bad, *APPROVE1)
         check("V35 스냅샷 파일 목록이 승인 대상과 다르면 거부(submission_snapshot_invalid)", code == 2 and out["error"] == "submission_snapshot_invalid" and same, out)
 
-        # ---- discovery: 공통 불변식(스냅샷이 있으면 비교), 스냅샷 없으면 기존 경로 유지
+        # ---- discovery: 공통 불변식(스냅샷 비교). 스냅샷 없는 제출은 승인 거부(P1-4, product_stabilization_test)
         dv = root / "disc"
         (dv / ".ai-workflow").mkdir(parents=True)
         shutil.copy(TEMPLATE, sp(dv))

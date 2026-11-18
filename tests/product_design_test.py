@@ -811,9 +811,10 @@ def main() -> int:
     code, out = pi("reopen", *P(dr), "--stage", "ux_planning", "--reason", "승인 후 변경 반영")
     check("H1f 같은 단계 승인 후 변경은 reopen 허용", code == 0 and out["status"] == "in_progress", out)
 
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\nRESULT {passed}/{len(results)} passed  (임시 디렉터리: {root})")
-    return 0 if passed == len(results) else 1
+    passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
+    skipped = sum(1 for _, _, m in results if m == "SKIP")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":

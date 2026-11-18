@@ -67,6 +67,13 @@ def preview_check(project: Path, st: dict) -> dict:
             errors.append(f"프리뷰 manifest의 {s}가 {SCREENS_FILE}에 없습니다")
     # 경계: 프리뷰는 실제 API·제품 코드·프리뷰 밖 경로를 쓰지 않고, 제품 코드도 프리뷰를 참조하지 않음
     errors += preview_isolation(project)
+    # 디자인 탐색 시안은 정식 프리뷰에 섞이지 않습니다(D4: 동일 파일 복사·명시적 참조 차단, 시각적 유사성은 판정하지 않음)
+    import pd_guard as GD  # 지역 import(순환 방지). EX6: 탐색 산출물·미승인 테마·자산 유입 차단(공통 규칙)
+    for x in GD.findings(project, preview_files(project), st) + GD.symlink_findings(project, [PREVIEW_DIR]):
+        errors.append(GD.message(x))
+    if workflow_of(st) == "v2" and (st.get("exploration") or {}).get("visual"):
+        from pd_visual import adoption_theme_errors  # 승인되지 않은 후보 테마 값이 공식 테마에 들어갔는지
+        errors += [f"테마: {e}" for e in adoption_theme_errors(project, st)]
     if workflow_of(st) == "v2":
         tc = theme_check(project, st)
         if tc["applicable"] and tc["contract"]:

@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from pb_core import DESIGN_STATE_REL, PD_CLI, block, digest
+from pb_core import DESIGN_STATE_REL, PD_CLI, block, digest, read_design_state
 
 REVIEW_FORMAT = "pb-ui-review/v1"
 ROUTES = ("code_fix", "design_change", "needs_decision")
@@ -75,11 +75,7 @@ def next_for(route: str, bid: str, item: dict | None) -> str:
 
 
 def design_revisions(project: Path) -> dict:
-    p = project / DESIGN_STATE_REL
-    try:
-        d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
-    except json.JSONDecodeError:
-        d = {}
+    d = read_design_state(project)
     return {k: (v or {}).get("approved_revision") for k, v in (d.get("stages") or {}).items()}
 
 

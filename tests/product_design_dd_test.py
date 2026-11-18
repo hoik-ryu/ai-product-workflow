@@ -317,9 +317,10 @@ def main() -> int:
         else:
             skip("S10", "pnpm 빌드 불가")
 
-    passed = sum(1 for _, ok_, _ in results if ok_)
-    print(f"\nRESULT {passed}/{len(results)} passed  (임시 디렉터리: {root})")
-    return 0 if passed == len(results) else 1
+    passed = sum(1 for _, ok_, m in results if ok_ and m != "SKIP")
+    skipped = sum(1 for _, _, m in results if m == "SKIP")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":

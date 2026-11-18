@@ -77,7 +77,7 @@ disable-model-invocation: true
 3. 그렇지 않으면 notes의 내용만으로 `templates/01-discovery.md`에 따라 `docs/planning/01-discovery.md` 초안을 씁니다. 답이 없는 항목은 `ASM-`/`Q-`로 둡니다(가이드 참조). `reference/id-conventions.md`를 읽습니다.
    - 파일이 없으면 새로 씁니다.
    - 파일이 있으면(수정 사이클) `file-safety.md`를 적용합니다: 설명 → 확인 → 필요 시 백업 → 쓰기.
-4. discovery `revision`을 1 올리고(front matter와 일치), 상태를 `awaiting_approval`로 바꾼 뒤 `ps_state.py event --stage discovery --event submitted --revision <N> --note ...`로 history를 기록합니다. 3단계로 이동합니다.
+4. `01-discovery.md`의 front matter `revision`을 제출할 revision(현재 + 1)으로 맞춘 뒤 `ps_state.py submit --project . --stage discovery --revision <현재 + 1> --confirm --note "<제출 요지>"`를 실행합니다. 스크립트가 revision·front matter를 검증하고, revision 갱신·`awaiting_approval`·제출 스냅샷(`submitted.{revision, at, hashes}`)·history `submitted`를 한 번에 기록합니다. state.yaml의 revision·status를 직접 바꾸거나 `event --event submitted`로 대신하지 않습니다(거부됨). 거부되면 이유를 보고하고 멈춥니다. 3단계로 이동합니다.
 
 ## 3단계 — Discovery 승인 게이트
 

@@ -96,7 +96,7 @@ def scenario_main(root: Path) -> None:
     check("G28 JSON 계약: 형식·필수 키·exit와 ok 일치·브라우저 not_run·read_only",
           out.get("format") == "pb-ui-guard/v1" and all(k in out for k in ("ok", "mode", "base", "snapshot", "design", "files", "checks", "errors",
                                                                              "warnings", "legacy", "route_hint", "counts", "browser", "read_only"))
-          and set(out["checks"]) == {"protected", "tokens", "audit", "map", "components"} and out["browser"]["status"] == "not_run"
+          and set(out["checks"]) == {"protected", "tokens", "audit", "map", "components", "exploration"} and out["browser"]["status"] == "not_run"
           and out["base"]["ref"] == "HEAD" and len(out["snapshot"]["digest"]) == 16, sorted(out))
 
     # G30 기존 token-audit 출력(추출 리팩터 후에도 같은 판정)

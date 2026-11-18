@@ -208,10 +208,12 @@ def load_state(project: Path) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         block("state_unreadable", f"{STATE_REL}을 읽을 수 없습니다: {e}")
-    return None
+    if not isinstance(st, dict) or not isinstance(st.get("stages", {}), dict):
+        block("state_unreadable", f"{STATE_REL}의 최상위 형식이 올바르지 않습니다(객체여야 하고 stages도 객체). 자동으로 고치지 않습니다. Git 이력에서 복원하세요.")
+    return st
 
 
 def require_state(project: Path) -> dict:
@@ -993,6 +995,8 @@ def cross_verify(project: Path, st: dict) -> dict:
             changed = diff_hashes(s["approved"]["hashes"], cur)
             if changed:
                 problems.append({"stage": stage, "kind": "approved_modified", "paths": changed})
+            if stage == "design_direction":
+                _dd_asset_verify(project, st, s["approved"], problems, warnings)
         elif s["status"] == "awaiting_approval":
             changed = diff_hashes(s["submitted"]["hashes"], cur)
             if changed:
@@ -1114,7 +1118,7 @@ def detect_outdated(project: Path, st: dict, gate: dict) -> list[str]:
 def existing_design_paths(project: Path) -> list[str]:
     """start 전에 이미 있으면 안 되는 경로(파일이거나 비어 있지 않은 디렉터리)."""
     out = []
-    for p in (DESIGN_DIR, PREVIEW_DIR, NOTES_REL):
+    for p in (DESIGN_DIR, PREVIEW_DIR, NOTES_REL, "design-explore"):  # design-explore: 디자인 탐색 산출물(pd_explore.EXPLORE_DIR)
         pp = project / p
         if pp.exists() and (pp.is_file() or any(pp.iterdir())):
             out.append(p)
@@ -1562,3 +1566,54 @@ __all__ = [
     'workflow_info',
     'workflow_of',
 ]
+
+
+def _dd_asset_verify(project: Path, st: dict, rec: dict, problems: list, warnings: list) -> None:
+    """P0-1: 승인 기록의 자산 스냅샷과 현재 자산 비교. 스냅샷이 없는 이전 승인 기록은 자산을 공식으로 인정하지 않는다고 경고합니다."""
+    import pd_assets as PA
+    if "assets" not in rec:
+        if re.search(r"AST-\d{3}", read_text(project, DD_FILE)):
+            warnings.append("Design Direction 승인 기록에 자산 스냅샷이 없습니다(asset_snapshot_missing, 이전 승인). 07이 참조하는 자산은 "
+                            "Preview·Build에서 공식 자산으로 인정하지 않습니다. 쓰려면 사용자 확인 후 reopen --stage design_direction → 재승인합니다.")
+        return
+    drift = PA.snapshot_drift(project, st, rec["assets"])
+    if drift:
+        problems.append({"stage": "design_direction", "kind": "approved_asset_modified",
+                         "paths": [rec["assets"][a]["file"] for a in drift],
+                         "message": f"승인된 자산 {', '.join(drift)}의 파일·레지스트리 항목·권리 확인 기록이 승인 스냅샷과 다릅니다. "
+                                    "승인 당시 자산으로 복원하거나 reopen --stage design_direction 후 재승인합니다."})
+
+
+class rollback_on_failure:
+    """부분 쓰기 방지(파일럿 안정화): 블록 안에서 실패(예외, 0이 아닌 종료)하면 지정 파일을 이전 바이트로 되돌리고
+    블록 안에서 새로 만든 폴더를 지웁니다. 성공 종료(emit 코드 0)는 되돌리지 않습니다."""
+
+    def __init__(self, project: Path, files=(), new_dirs=()):
+        self.project = project
+        self.files = list(files)
+        self.new_dirs = list(new_dirs)
+
+    def __enter__(self):
+        self.saved = {rel: ((self.project / rel).read_bytes() if (self.project / rel).is_file() else None) for rel in self.files}
+        self.created = [d for d in self.new_dirs if not (self.project / d).exists()]
+        return self
+
+    def __exit__(self, et, ev, tb):
+        if et is None or (et is SystemExit and getattr(ev, "code", 0) in (0, None)):
+            return False
+        for d in self.created:
+            shutil.rmtree(self.project / d, ignore_errors=True)
+        for rel, b in self.saved.items():
+            p = self.project / rel
+            try:
+                if b is None:
+                    if p.is_file():
+                        p.unlink()
+                else:
+                    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".rollback.", suffix=".tmp")
+                    with os.fdopen(fd, "wb") as f:
+                        f.write(b)
+                    os.replace(tmp, p)
+            except OSError:
+                pass
+        return False

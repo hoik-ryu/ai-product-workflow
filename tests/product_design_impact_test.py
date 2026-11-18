@@ -343,9 +343,10 @@ def main() -> int:
     m = impact_of(item(out, "D3"), "visual")
     check("I18a 프리뷰가 잠긴 상태의 ④: 재승인 없음, 해당 단계 진행 시 반영", m.get("effective_status") == "locked" and m.get("reapproval_required") is False, m)
 
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\nRESULT {passed}/{len(results)} passed  (임시 디렉터리: {root})")
-    return 0 if passed == len(results) else 1
+    passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
+    skipped = sum(1 for _, _, m in results if m == "SKIP")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":

@@ -92,16 +92,14 @@ def main() -> int:
         code, out = ps(d, "approve", "--stage", "discovery", "--revision", "1")
         check("S4 제출 전(in_progress) 승인 거부", code == 2 and out["error"] == "not_awaiting_approval", out)
 
-        # LLM이 초안을 쓰고 제출 상태로 바꾼 상황
+        # LLM이 초안을 쓰고 submit으로 제출한 상황(상태 직접 편집 없음, 제출 스냅샷)
         doc(d, "docs/planning/01-discovery.md", 1)
-        edit(d, r"(  discovery:\n    status:) in_progress", r"\1 awaiting_approval")
-        edit(d, r"(  discovery:\n.*?\n    revision:) 0", r"\1 1")
-        ps(d, "event", "--stage", "discovery", "--event", "submitted", "--revision", "1", "--note", "r1 제출")
+        ps(d, "submit", "--stage", "discovery", "--revision", "1", "--confirm", "--note", "r1 제출")
         code, out = ps(d, "approve", "--stage", "discovery", "--revision", "2")
         check("S5 제시한 revision과 다르면 승인 거부", code == 2 and out["error"] == "revision_mismatch", out)
         doc(d, "docs/planning/01-discovery.md", 2)
         code, out = ps(d, "approve", "--stage", "discovery", "--revision", "1")
-        check("S6 front matter revision이 다르면 승인 거부(수동 편집 의심)", code == 2 and out["error"] == "frontmatter_mismatch", out)
+        check("S6 제출 이후 front matter revision을 바꾸면 승인 거부(제출 스냅샷 불일치)", code == 2 and out["error"] == "changed_since_submission", out)
         doc(d, "docs/planning/01-discovery.md", 1)
         before = datetime.now(timezone.utc).replace(microsecond=0)
         code, out = ps(d, "approve", "--stage", "discovery", "--revision", "1", "--note", "사용자 명시적 승인")
@@ -111,7 +109,7 @@ def main() -> int:
         check("S7 discovery 승인: approved.{revision,at,hashes}·상태·planning 잠금 해제·history approved",
               code == 0 and stage_status(text, "discovery") == "approved" and stage_status(text, "planning") == "not_started"
               and out["approved"]["hashes"]["docs/planning/01-discovery.md"] == h01
-              and re.search(r'event: approved, revision: 1, note: "사용자 명시적 승인", src: engine', text), out)
+              and re.search(r'event: approved, revision: 1, note: "사용자 명시적 승인\. 제출 스냅샷\(r1, [^"]*\)과 일치 확인", src: engine', text), out)
         check("S8 승인 시각은 실제 시스템 시각(실행 전후 사이)", before <= utc(out["approved"]["at"]) <= after, (before, out["approved"]["at"], after))
         check("S9 주석이 붙은 status 줄도 값만 바꾸고 주석 유지",
               re.search(r"^    status: approved   # in_progress \| awaiting_approval \| approved$", text, re.M), text[:900])
@@ -149,9 +147,9 @@ def main() -> int:
         code, out = ps(e, "check")
         check("S15 기존 항목(src 없음)은 legacy로 세고 문제 아님, 파일은 바뀌지 않음", code == 0 and out["legacy"] == 1
               and (e / ".ai-workflow/state.yaml").read_bytes() == raw, out)
-        ps(e, "event", "--stage", "discovery", "--event", "submitted", "--revision", "1")
+        ps(e, "event", "--stage", "discovery", "--event", "changes_requested", "--revision", "0")
         t = (e / ".ai-workflow/state.yaml").read_text(encoding="utf-8")
-        check("S16 기존 항목 뒤에 새 항목 추가(기존 줄 보존)", 'note: "old" }' in t and t.index('note: "old"') < t.index("event: submitted"), t[-300:])
+        check("S16 기존 항목 뒤에 새 항목 추가(기존 줄 보존)", 'note: "old" }' in t and t.index('note: "old"') < t.index("event: changes_requested"), t[-300:])
         bad = t.replace('  - { at: "2026-01-01T00:00:00Z"', '  - { at: "2099-01-01T00:00:00Z"')
         (e / ".ai-workflow/state.yaml").write_text(bad, encoding="utf-8")
         code, out = ps(e, "check")

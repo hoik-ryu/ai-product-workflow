@@ -56,9 +56,12 @@ LLM이 사용자 요청을 사실로 정리해 **프로젝트 밖** 임시 파�
 | `notation` | 명세 표기 문자열 변경 | 항상 `needs_review`(보이는 글자인지 정보 순서인지 사람이 판단) |
 | `implementation_note` | 설명 | ⑤ 확정 |
 | `defect` | 결함 보고 | `excluded` |
+| `exploration_choice` | `choice`(EXP-…), `aspect`: `structure`·`composition`·`theme_value`(`tokens`)·`asset`(`role`) | 기록된 선택이 아니면 `needs_review`. structure → ①(UX Planning부터 재검토), composition → ④, theme_value → ③(04 밖 토큰이면 ②), asset → ④(기능 자산은 조건부, 대안 ①) |
 | 그 밖 | - | `needs_review` |
 
 **플래그**와 안내: `spec_conflict`(명세 값과 다름 — 되돌리거나 ①로 UX Spec 개정), `outside_tokens`(승인 토큰 밖 값), `accessibility_check`(테두리·색·불투명도·글자 크기 — 대비 확인 필요, 자동 검사는 M2), `new_visual_value`(안전 영역·밀도처럼 새 시각 정책 값), `theme_omission`(같은 계열 토큰 누락).
+
+**입력 C — 탐색 선택**: `impact --design --choice EXP-V02-A`는 선택 기록에서 사실을 자동으로 만듭니다(1차: 그 선택을 근거로 한 UXD와 그 UXD를 쓰는 화면, 2차: 대상 화면·쓰인 CMP의 구도 ④, 공식 테마와 다른 후보 값 ③, 04 밖 후보 토큰 ②, 쓰인 자산 ④). 출력의 `exploration`에 영향 화면·컴포넌트·VD(승인 기록 여부)·후보와 공식 테마 차이·자산 공식 여부(`approved_vs_candidate`)가 나옵니다. 탐색 선택은 공식 승인이 아니므로 분류는 '공식 디자인으로 옮길 때의 영향'입니다.
 
 ## 4. 입력 B — 파일 차이(파일·토큰 이름 기준)
 

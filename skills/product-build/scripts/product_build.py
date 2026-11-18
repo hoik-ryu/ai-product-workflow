@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1345,6 +1346,11 @@ def cmd_verify(a) -> None:
     if ui:  # M3.3·M3.4: 필수 상태 E2·브라우저 차단 항목·토큰 검사·UI Plan 검증
         reasons += ui["reasons"]
         ok = not reasons
+    # 디자인 탐색 시안(design-explore/)은 제품 코드에 섞이지 않음: 배치 범위 파일의 명시적 참조·동일 파일 복사 차단(설계 D4, UI 여부와 무관)
+    xf = batch_exploration_findings(project, plan_batch, prof)
+    if xf:
+        reasons += [f"[{x['kind']}] " + U.GD.message(x) for x in xf]
+        ok = False
     summary = {"run_id": run["run_id"], "dir": run["dir"], "digest": run["digest"], "at": run["at"], "valid": run["valid"],
                **({"browser_pending": pending} if pending else {}),
                "steps": step_summary(run), "counts": {k: sum(1 for e in ev.values() if e["status"] == k) for k in
@@ -1999,6 +2005,26 @@ def _em_now(project: Path, prof: dict, bid: str, b: dict) -> list[dict]:
     return out
 
 
+def batch_exploration_findings(project: Path, plan_batch: dict, prof: dict) -> list[dict]:
+    """verify의 디자인 탐색 격리 판정(P1-2): 배치 paths.allow·shared 안 파일(프로필 UI 확장자 포함, 확장자 대소문자 무시)과
+    그 범위 안 심볼릭 링크. 판정 규칙은 ui-guard와 같은 pd_guard입니다(ui-guard는 변경·지정 파일 또는 소스 범위 전체가 대상)."""
+    files = _batch_text_files(project, plan_batch, U.ui_profile(prof)[0]["audit"]["extensions"])
+    pats = ((plan_batch.get("paths") or {}).get("allow") or []) + ((plan_batch.get("paths") or {}).get("shared") or [])
+    roots = sorted({re.split(r"[*?\[]", p, maxsplit=1)[0].rstrip("/") or "." for p in pats})
+    links = [x for x in U.GD.symlink_findings(project, roots) if in_patterns(x["file"], pats)]
+    return U.explore_findings(project, files) + links
+
+
+def _batch_text_files(project: Path, plan_batch: dict, extra_exts=()) -> list[str]:
+    """배치 paths.allow·shared 안의 텍스트·이미지 파일(테스트 포함)과 프로필 UI 확장자([ui.audit].extensions). 디자인 탐색 시안 섞임 검사용."""
+    pats = ((plan_batch.get("paths") or {}).get("allow") or []) + ((plan_batch.get("paths") or {}).get("shared") or [])
+    if not pats:
+        return []
+    return [f for f in U.walk(project, None, ["node_modules", "dist", ".git", U.PREVIEW_DIR, U.EXPLORE_DIR],
+                             set(U.TEXT_EXT) | {".css", ".scss", ".html", ".svg", ".json", ".md"} | set(U.GD.IMAGE_EXTS)
+                             | {str(e).lower() for e in extra_exts}) if in_patterns(f, pats)]
+
+
 def _ui_component_checks(project: Path, st: dict, plan: dict, bid: str, uprof: dict, uplan: dict | None, umap: dict | None, brief: dict,
                          R: list[str], W: list[str]) -> dict:
     """verify의 부품 검사(정적): 대응표·배치 범위 중복(map_problems --batch)과 UI Plan의 재사용 부품이 코드에서 참조되는지.
@@ -2055,9 +2081,13 @@ def _ui_evaluate(project: Path, st: dict, prof: dict, bid: str, b: dict, run: di
     if umap and umap.get("tokens"):
         try:
             tc = U.token_check(project, umap)
-            tokens["check"] = {k: tc.get(k) for k in ("ok", "source", "format", "counts", "missing", "mismatch", "excepted", "stale_exceptions")}
+            tokens["check"] = {k: tc.get(k) for k in ("ok", "source", "format", "counts", "missing", "mismatch", "excepted", "stale_exceptions",
+                                                      "theme_approval", "expected_basis")}
             if not tc["ok"]:
-                R.append("[token_mismatch] 승인 토큰과 다르거나 없는 값: " + ", ".join(x["token"] for x in tc["missing"] + tc["mismatch"]))
+                if tc.get("theme_changed_since_approval"):
+                    R.append("[theme_changed] 승인 당시 테마와 현재 테마 파일이 다릅니다(현재 값은 승인값이 아님)")
+                if tc["missing"] or tc["mismatch"]:
+                    R.append("[token_mismatch] 승인 토큰과 다르거나 없는 값: " + ", ".join(x["token"] for x in tc["missing"] + tc["mismatch"]))
         except Blocked as e:
             tokens["check"] = {"ok": False, "error": e.payload.get("error"), "message": e.payload.get("message")}
             R.append(f"[token_check_failed] {e.payload.get('message')}")

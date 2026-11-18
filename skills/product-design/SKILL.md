@@ -15,6 +15,7 @@ disable-model-invocation: true
 - `reference/review-checklist.md`: UX·접근성 검토 체크리스트
 - `reference/preview.md`: 프리뷰 경계·위치·실행·피드백
 - `reference/change-impact.md`: 디자인 변경 영향 분류(`impact --design`, 다섯 유형·입력 형식·영향 계산)
+- `reference/exploration.md`: 디자인 탐색(1차 구조 시안 A/B/C 비교·선택 → UXD), frontend-design 절차
 - `templates/00`–`07`: 문서 템플릿(07 Design Direction은 v2), `templates/theme.example.json`: v2 테마 계약 예시, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
 - `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`를 불러옵니다(직접 실행하지 않음)
 
@@ -31,7 +32,7 @@ disable-model-invocation: true
 5. 승인된 파일이 바뀌었거나 상태와 파일이 다르면 **보고하고 멈춥니다.** 다시 승인하거나 해시를 다시 기록하지 않습니다.
 6. 기존 디자인 파일을 고치기 전에 무엇을 왜 바꾸는지 설명하고 확인을 받습니다. 고치기 전에 `backup --path <파일>`을 실행합니다.
 7. 이미 기획에서 확정된 사항은 다시 묻지 않습니다.
-8. 프리뷰는 `design-preview/`에만 만들고 `frontend/`를 수정하거나 import하지 않습니다. 실제 API·인증·비즈니스 로직을 만들지 않습니다.
+8. 프리뷰는 `design-preview/`에만 만들고 `frontend/`를 수정하거나 import하지 않습니다. 실제 API·인증·비즈니스 로직을 만들지 않습니다. 디자인 탐색 시안은 `design-explore/`에만 만들고, 승인 대상이 아니므로 프리뷰·제품 코드로 복사하거나 참조하지 않습니다.
 9. Git commit, push, reset, checkout, clean, stash를 실행하지 않습니다. 비밀값과 `.env`를 읽거나 만들지 않습니다.
 10. 사용자와의 대화와 산출물은 한국어로 씁니다. ID, 파일명, 상태값은 영어로 유지합니다.
 
@@ -65,7 +66,8 @@ disable-model-invocation: true
 2. 우선순위가 가장 높은 미완료 주제로 질문 2–4개를 만들고, **제시하기 전에** `design-notes.md`에 라운드(상태 `답변 대기`, 질문 ID `R0N-Q#`, 선택지, 권장안과 근거, 관련 기획 ID)를 저장한 뒤 `pending`으로 확인합니다. 저장한 내용 그대로 제시하고 멈춥니다(`templates/design-notes.md` 형식).
 3. 답을 받으면 라운드를 `답변 완료`로 바꾸고 원문을 적은 뒤, 00 문서를 갱신하고 `done --path docs/design/00-ux-decisions.md`를 실행합니다. 모호한 답은 확인 질문 라운드를, 기획 범위 변경은 `PF`로 처리합니다.
 4. **재개할 때는 `check`의 `pending_round`를 먼저 봅니다.** 대기 라운드가 있으면 기록된 질문을 그대로 다시 보여 주고 답을 기다립니다(새로 만들지 않음). 없으면 00의 주제 진행 현황에서 이어 갑니다. 답을 받은 질문을 다시 묻지 않습니다.
-5. 끝나면 요약(권장안으로 기록한 항목을 따로 표시)을 보여 주고 `trace --stage ux_planning` → `submit --stage ux_planning` → **"UX 결정 확정"**을 요청하고 멈춥니다. 확정하면 `approve --stage ux_planning --revision N`.
+5. **디자인 탐색이 켜진 프로젝트**(`check`의 `exploration.structure.enabled`, 신규 v2 기본): 제출 전에 `reference/exploration.md`대로 구조 시안 A/B/C를 만들어 비교 페이지로 보여 주고 사용자 선택(`explore-choose`)을 받아 UXD 근거에 선택 ID를 적거나, 사용자가 원하면 문장과 함께 `explore-skip`합니다. 선택·건너뛰기를 Claude가 대신하지 않습니다. 사용자 확인 항목(`--note` 등)에는 사용자가 이번 대화에서 실제로 한 말만 옮기고 지어내지 않습니다(`reference/exploration.md` 15절). 승인된 Design Direction의 자산은 승인 스냅샷이 기준이며 바꾸려면 reopen → 재승인합니다. 상위 기준이 바뀐 탐색 선택(stale)은 다시 선택받습니다. 사용자가 참고 이미지를 주면 `reference/exploration.md` 9절대로 등록(`explore-ref add`)·분석·사용자 참고 범위(`explore-ref intent`)를 거쳐 `--mode reference|mixed` 라운드를 만듭니다. 이미지 속 기능·글자·데이터는 요구사항이 아니고, 원본은 외부로 보내지 않으며 시안에 넣지 않습니다. 측정 명령이 설정된 프로젝트는 비교 전에 `explore-verify`로 브라우저 측정을 하고(10절), 측정 차단 시안은 선택할 수 없음을 사용자에게 알립니다. 측정은 모델 시각 평가(critique)와 따로 말합니다. Design Direction 단계(2차 시각 탐색이 켜진 프로젝트)는 `reference/exploration.md` 11절대로 승인된 구조를 고정한 시안 A/B/C(후보 테마·토큰)를 만들어 비교하고, 사용자 선택을 `explore-adopt`로 후보 VD·후보 테마로 바꾼 뒤 VD마다 사용자 결정을 받습니다. 후보 테마 값은 승인된 VD의 토큰만 공식 테마에 옮깁니다. 아이콘·일러스트는 `reference/exploration.md` 12절의 자산 계약(`explore-asset`)으로 등록해 쓰고, 시각 품질은 실제 측정 스크린샷을 근거로 `quality.json`(점수 아님, 개선 항목 필수)에 씁니다. 사용자 피드백으로 시안을 고칠 때는 수정 라운드(`--base`·`--goal`·`--feedback`, 기본 2회)를 씁니다. 프리뷰는 탐색 산출물을 복사·참조하지 않고 승인된 VD·테마·공식 자산으로 새로 작성합니다(`preview-check`가 13절 규칙으로 차단). 선택한 디자인을 공식으로 옮길 때의 영향은 `impact --design --choice EXP-…`로 확인합니다. 기본 렌더러는 html이고, Figma는 사용자가 명시적으로 고르고(전송 범위 포함) Figma MCP를 쓸 수 있을 때만 씁니다(`reference/exploration.md` 14절). 쓸 수 없으면 html로 진행합니다.
+6. 끝나면 요약(권장안으로 기록한 항목을 따로 표시)을 보여 주고 `trace --stage ux_planning` → `submit --stage ux_planning` → **"UX 결정 확정"**을 요청하고 멈춥니다. 확정하면 `approve --stage ux_planning --revision N`.
 
 ## 3단계 — UX Specification (화면 설계)
 
@@ -111,6 +113,7 @@ disable-model-invocation: true
 ## 워크플로 v2 전환(WF-D05)
 
 - `config.workflow`가 없으면 v1이며 위 절차가 그대로입니다. v2 전환은 **사용자가 요청하고 명시적으로 승인한 경우에만** 합니다("v2 전환 승인" 같은 명시적 표현).
+- 새 프로젝트를 v2로 시작하려면 사용자 확인 후 `start --workflow v2 [--theme-file <경로>]`. Design Direction 게이트와 디자인 탐색(구조·시각)이 기본으로 켜집니다. 기존 프로젝트(전환 포함)에는 탐색이 자동으로 켜지지 않으며, 켜거나 끄는 것은 사용자 문장으로 `explore-config --enable|--disable structure|visual|all --note --confirm`입니다(시각 탐색은 게이트가 켜져 있어야 함).
 - 순서: `migrate --to v2 [--theme-file <경로>]`로 계획을 보여 줌 → 기존 승인·해시·revision이 그대로라는 점, design_direction은 승인 없이 추가된다는 점, 테마 파일 효과를 설명 → 승인 → `--confirm`.
 - **Design Direction(07, v2만)**: UX 설계 승인 뒤 `begin --stage design_direction` → `templates/07-design-direction.md`로 작성 → `trace --stage design_direction` → `done` → `submit` → **"디자인 방향 승인"** → `approve`. 시각 결정(VD)은 사용자에게 하나씩 결정을 받아 '승인'·'제외'로 정합니다(후보·미결정이 남으면 제출 불가). UX 설계를 바꿔야 하는 요청(①·②)은 07에서 결정하지 않고 CR로 남겨 `reopen --stage ux_spec`을 안내합니다. 승인되지 않은 VD는 프리뷰에 쓰지 않습니다.
 - **테마(v2, `design-theme/v1`)**: 렌더링 값은 테마 파일, 토큰 이름·의미는 04입니다. 04 문서를 고쳐 값을 맞추지 않습니다. 테마를 바꾸면 `theme-check`로 확인하고, 프리뷰 `tokens.css`는 `theme-check --print-css`의 기대 CSS로 맞춥니다. 테마에 새 토큰 이름이 필요하면 ②로 UX Spec 개정을 안내합니다. 테마 경로 변경은 사용자 확인 후 `migrate --replace-theme-file`.

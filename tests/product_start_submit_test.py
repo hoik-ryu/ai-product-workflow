@@ -91,8 +91,7 @@ def generating_project(root: Path, name: str, rev: int = 1) -> Path:
     shutil.copy(TEMPLATE, sp(d))
     ps(d, "event", "--stage", "discovery", "--event", "started", "--revision", "0")
     doc(d, "docs/planning/01-discovery.md", 1, "디스커버리")
-    edit(d, r"(  discovery:\n    status:) in_progress", r"\1 awaiting_approval")
-    edit(d, r"(  discovery:\n.*?\n    revision:) 0", r"\1 1")
+    assert ps(d, "submit", "--stage", "discovery", "--revision", "1", "--confirm")[0] == 0  # T2는 submit으로만(제출 스냅샷)
     assert ps(d, "approve", "--stage", "discovery", "--revision", "1")[0] == 0
     edit(d, r"(  planning:\n    status:) not_started", r"\1 in_progress")
     edit(d, r"based_on_discovery_revision: null", "based_on_discovery_revision: 1")
@@ -134,7 +133,7 @@ def main() -> int:
         code, out, same = unchanged_after(d, "submit", "--stage", "planning", "--revision", "0", "--confirm")
         check("U3 현재 revision 그대로(0) 제출 거부, 무변경", code == 2 and out["error"] == "revision_mismatch" and same, out)
         code, out, same = unchanged_after(d, "submit", "--stage", "discovery", "--revision", "2", "--confirm")
-        check("U4 discovery 제출(T2)은 submit 대상 아님, 무변경", code == 2 and out["error"] == "unsupported_stage" and same, out)
+        check("U4 이미 승인된 discovery는 submit으로 다시 제출하지 않음(not_in_progress), 무변경", code == 2 and out["error"] == "not_in_progress" and same, out)
         code, out, same = unchanged_after(d, "event", "--stage", "planning", "--event", "submitted", "--revision", "1")
         check("U5 event로 planning submitted 기록 거부(우회 경로 차단), 무변경", code == 2 and out["error"] == "use_submit" and same, out)
         doc(d, "docs/planning/04-user-flows.md", 2)

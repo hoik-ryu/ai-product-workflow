@@ -52,6 +52,7 @@ PROTECTED = (
     WORKFLOW_STATE_REL, DESIGN_STATE_REL, BOILERPLATE_REL,
     ".ai-workflow/discovery-notes.md", ".ai-workflow/design-notes.md", ".ai-workflow/backup/",
     "docs/planning/", "docs/design/", "design-preview/",
+    "design-explore/",  # /product-design 디자인 탐색 시안(승인 대상 아님, 제품 코드에 쓰지 않음)
 )
 DESIGN_INPUT_FILES = (UXP_FILE, IA_FILE, SCREENS_FILE, "docs/design/03-screen-flows.md", UISYS_FILE, TRACE_FILE, DD_FILE)
 
@@ -160,6 +161,19 @@ def load_state(project: Path) -> dict | None:
     return st
 
 
+def read_design_state(project: Path) -> dict:
+    """/product-design 상태(design.json)를 읽기 전용으로 읽습니다. 없거나 형식이 올바르지 않으면 {}(승인 없음으로 취급).
+    형식 오류 자체는 design_info(L0, status_error)·pd_guard(design_data_invalid)·token_check(design_state_invalid)가 보고합니다."""
+    p = project / DESIGN_STATE_REL
+    try:
+        d = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    if not isinstance(d, dict) or not isinstance(d.get("config") or {}, dict) or not isinstance(d.get("stages") or {}, dict):
+        return {}
+    return d
+
+
 def state_problems(st) -> list[str]:
     if not isinstance(st, dict):
         return ["최상위가 객체가 아닙니다"]
@@ -261,7 +275,7 @@ def design_info(project: Path) -> dict:
     if not ds.get("stages"):
         return {"level": "L0", "present": True, "reason": f"디자인 상태를 읽을 수 없습니다: {ds.get('message')}", "stages": {},
                 "status_error": ds.get("error")}
-    raw = json.loads((project / DESIGN_STATE_REL).read_text(encoding="utf-8"))
+    raw = read_design_state(project)
     stages = ds["stages"]
     probs = (ds.get("cross_verify") or {}).get("problems", [])
     bad = {p.get("stage") for p in probs}

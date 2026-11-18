@@ -77,7 +77,8 @@ STYLE_STRUCTURAL = {"icon", "grouping", "layout", "alignment", "illustration"}
 A11Y_SENSITIVE = {"border", "color_usage", "opacity", "font_size"}
 NEW_VISUAL_POLICY = {"safe_area", "density"}
 FACT_KINDS = ("info", "behavior", "placement", "token_name", "token_value", "style", "dimension", "notation",
-              "implementation_note", "defect")
+              "implementation_note", "defect", "exploration_choice")
+EXPLORATION_ASPECTS = ("structure", "composition", "theme_value", "asset")
 
 
 def classify_fact(fact: dict, ctx: dict) -> dict:
@@ -167,6 +168,31 @@ def classify_fact(fact: dict, ctx: dict) -> dict:
         return done(None, "needs_review", "명세의 표기 규칙이 '보이는 글자'인지 '정보 순서'인지 사람이 판단해야 합니다.")
     if kind == "implementation_note":
         return done("implementation", "auto", "보이는 결과와 정보·행동에 영향이 없는 구현 메모입니다.")
+    if kind == "exploration_choice":  # EX6: 디자인 탐색 선택 사실(설계 §2.10: 1차 → ①, 2차 구도 → ④, 2차 테마 값 → ③, 04 밖 토큰 → ②)
+        cid, aspect = fact.get("choice"), fact.get("aspect")
+        r["evidence"]["choice"] = cid
+        known = ctx.get("choices")
+        if known is not None and cid not in known:
+            return done(None, "needs_review", f"기록된 탐색 선택이 아닙니다: {cid}")
+        if aspect == "structure":
+            r["evidence"]["stage_hint"] = "ux_planning"
+            return done("info_behavior", "auto", "1차(구조) 탐색 선택이 바뀌면 그 선택을 근거로 한 UXD와 화면 구조가 바뀝니다(①).")
+        if aspect == "composition":
+            return done("visual", "auto", "2차 선택의 화면 구성·시각 계층(구도 VD)이 바뀝니다(④). 구조는 승인 02 그대로입니다.")
+        if aspect == "theme_value":
+            tokens = fact.get("tokens") or []
+            r["checked_against"].append(f"{UISYS_FILE}#토큰")
+            unknown = [t for t in tokens if t not in ctx["tokens"]]
+            r["evidence"]["tokens"] = {t: ("04에 있음" if t not in unknown else "04에 없음") for t in tokens}
+            if unknown:
+                return done("token_semantics", "auto", "탐색 후보 테마에 04에 없는 의미 토큰이 있습니다(②, UX Spec 개정).")
+            return done("theme_value", "auto", "04 토큰 이름은 그대로이고 후보 테마 값만 공식 테마와 다릅니다(③).")
+        if aspect == "asset":
+            if fact.get("role") == "functional":
+                return done("visual", "conditional", "기능 아이콘·이미지가 바뀝니다.", alt="info_behavior",
+                            cond="자산이 새 행동·정보를 나타내면 ①, 같은 행동의 표현만 바뀌면 ④")
+            return done("visual", "auto", "장식 아이콘·일러스트 표현이 바뀝니다(④). 권리 확인·승인 VD 관련 등록이 공식 사용 조건입니다.")
+        return done(None, "needs_review", f"exploration_choice의 aspect는 {'/'.join(EXPLORATION_ASPECTS)} 중 하나입니다.")
     return done(None, "needs_review", f"알 수 없는 사실 종류입니다: {kind} (허용: {', '.join(FACT_KINDS)})")
 
 

@@ -6,7 +6,7 @@ D-001: LLM이 history·승인 시각을 추측해 쓰지 않도록, 시각이 �
 - `event`: history에 전이 항목 하나 추가(시각은 스크립트가 정함)
 - `approve`: 명시적 승인 전이(T4 discovery·T8 planning) — 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`), 산출물 해시 계산, approved.{revision, at, hashes}, 스냅샷 비움, 상태·잠금 해제, history `approved`
 - `reopen`: 승인된 planning을 다시 엶(T9, `--confirm` 필수) — 승인 기록 검증, approved 초기화(이전 승인은 history에 보존), design 잠금, history `reopened`
-- `submit`: planning 제출(T6, `--confirm` 필수) — 다음 revision·front matter·discovery 기준 검증, awaiting_approval, artifacts_done 비움, 제출 스냅샷(submitted.{revision, at, hashes}) 기록, 추적성 보고, history `submitted`
+- `submit`: discovery 제출(T2)·planning 제출(T6), `--confirm` 필수. discovery는 revision·front matter 검증, awaiting_approval, 제출 스냅샷, history `submitted`. planning — 다음 revision·front matter·discovery 기준 검증, awaiting_approval, artifacts_done 비움, 제출 스냅샷(submitted.{revision, at, hashes}) 기록, 추적성 보고, history `submitted`
 - `migrate-snapshot`: 스냅샷 도입 이전에 제출된 planning에 스냅샷을 기록(`--confirm` 필수, history의 제출 해시와 일치할 때만)
 - `check`: 읽기 전용. history·승인 시각이 형식에 맞고 미래가 아니며 순서가 맞는지, 승인 대기 문서가 제출 이후 바뀌지 않았는지 검사(기존 기록은 고치지 않음)
 
@@ -193,6 +193,8 @@ def cmd_event(a) -> None:
         raise Blocked("use_reopen", "planning 재개(T9)는 reopen --confirm 명령으로 합니다(승인 기록 검증·초기화·design 잠금을 함께 처리).")
     if a.stage == "planning" and a.event == "submitted":
         raise Blocked("use_submit", "planning 제출(T6)은 submit --confirm 명령으로 합니다(revision·front matter·discovery 기준 검증과 상태 전환을 함께 처리).")
+    if a.stage == "discovery" and a.event == "submitted":
+        raise Blocked("use_submit", "discovery 제출(T2)은 submit --stage discovery --confirm 명령으로 합니다(revision·front matter 검증, 상태 전환, 제출 스냅샷을 함께 처리).")
     fd = lock(project)
     try:
         lines = read_lines(project)
@@ -223,9 +225,12 @@ def cmd_approve(a) -> None:
         snap = read_snapshot(lines, s, e)
         if snap is None:
             if a.stage in SNAPSHOT_REQUIRED:
-                raise Blocked("submission_snapshot_missing", f"{a.stage} r{rev}의 제출 스냅샷이 없습니다(스냅샷 도입 이전 제출). 제출 시점 문서와 같은지 "
-                              "확인할 수 없어 승인하지 않습니다. 선택지: (a) 사용자 확인 후 migrate-snapshot --confirm(제출 기록의 해시와 일치할 때만 스냅샷 기록), "
-                              "(b) 수정 요청(T3) 후 submit으로 다시 제출.", revision=int(rev))
+                raise Blocked("submission_snapshot_missing", f"{a.stage} r{rev}의 제출 스냅샷이 없습니다(스냅샷 도입 이전 제출이거나 상태를 직접 편집). "
+                              "제출 시점 문서와 같은지 확인할 수 없어 승인하지 않습니다. 선택지: "
+                              + ("(a) 사용자 확인 후 migrate-snapshot --confirm(제출 기록의 해시와 일치할 때만 스냅샷 기록), (b) 수정 요청(T3) 후 submit으로 다시 제출."
+                                 if a.stage == "planning" else
+                                 "수정 요청(T3: 상태 in_progress, event changes_requested) 후 submit --stage discovery --revision <N+1> --confirm으로 다시 제출."),
+                              revision=int(rev))
         else:
             if snap["revision"] != rev or parse_ts(snap["at"] or "") is None:
                 raise Blocked("submission_snapshot_stale", f"제출 스냅샷(r{snap['revision']})이 현재 제출 revision(r{rev})과 다르거나 형식이 맞지 않습니다. "
@@ -324,7 +329,7 @@ def approved_record(lines: list[str], k: int, end: int) -> dict:
 # stages.<stage>.submitted: { revision, at, hashes } — submit이 제출 문서의 전체 SHA-256을 기록하고, approve·check가 현재 문서와 비교합니다.
 # 승인되면 비웁니다(같은 해시가 approved.hashes에 보존됨). approved 블록 앞에 둡니다(기존 판독기는 approved 블록·승인 상태만 봄).
 # 블록이 없거나 revision이 null이면 "스냅샷 없음"입니다(스냅샷 도입 이전 상태 파일과 호환).
-SNAPSHOT_REQUIRED = ("planning",)  # discovery는 submit 명령이 없어 스냅샷이 있을 때만 비교합니다(state-machine.md 참조).
+SNAPSHOT_REQUIRED = ("discovery", "planning")  # 두 단계 모두 submit 명령이 제출 스냅샷을 남기고, approve는 스냅샷이 없으면 거부합니다.
 
 
 def snapshot_block(lines: list[str], s: int, e: int) -> tuple[int, int] | None:
@@ -518,8 +523,10 @@ def traceability(project: Path) -> dict:
 def cmd_submit(a) -> None:
     """T6: planning 제출. 모든 검증과 변경을 메모리에서 끝낸 뒤 한 번에 원자적으로 씁니다. 승인 해시는 쓰지 않습니다."""
     project = Path(a.project).resolve()
+    if a.stage == "discovery":
+        return submit_discovery(a, project)
     if a.stage != "planning":
-        raise Blocked("unsupported_stage", "submit은 planning(T6)만 지원합니다. discovery 제출(T2)은 기존 절차(event submitted)를 따릅니다.")
+        raise Blocked("unsupported_stage", "submit은 discovery(T2)·planning(T6)만 지원합니다.")
     if not a.confirm:
         raise Blocked("confirmation_required", "planning을 제출하면 승인 대기(awaiting_approval)가 됩니다. 제출할 revision을 확인한 뒤 --confirm으로 실행하세요.")
     fd = lock(project)
@@ -606,6 +613,67 @@ def cmd_submit(a) -> None:
           "note": "제출 해시는 submitted 스냅샷으로 기록했습니다(승인 해시 아님). approve는 이 스냅샷과 현재 문서가 같을 때만 승인합니다. "
                   "승인은 사용자의 명시적 승인 후 approve로만 기록합니다. "
                   "추적성 미해결 항목이 있으면 승인 요청 시 함께 제시합니다. design은 locked 그대로입니다."})
+
+
+def submit_discovery(a, project: Path) -> None:
+    """T2: discovery 제출. 상태를 직접 고치지 않도록 revision·front matter를 검증하고 awaiting_approval·제출 스냅샷·history를 한 번에 씁니다.
+    approve는 이 스냅샷과 현재 01 문서가 같을 때만 승인합니다(P1-4)."""
+    if not a.confirm:
+        raise Blocked("confirmation_required", "discovery를 제출하면 승인 대기(awaiting_approval)가 됩니다. 제출할 revision을 확인한 뒤 --confirm으로 실행하세요.")
+    fd = lock(project)
+    try:
+        lines = read_lines(project)
+        orig = list(lines)
+        wf = get_scalar(lines, 0, len(lines), "workflow", 0)
+        if wf != "ai-product-workflow":
+            raise Blocked("not_workflow_state", f"{STATE_REL}의 workflow 값이 ai-product-workflow가 아닙니다({wf}). 다른 프로젝트의 상태 파일일 수 있어 바꾸지 않습니다.")
+        s, e = stage_span(lines, "discovery")
+        status, rev = get_scalar(lines, s, e, "status"), get_scalar(lines, s, e, "revision")
+        if status != "in_progress":
+            raise Blocked("not_in_progress", f"discovery 상태가 {status}입니다. 작성 중(in_progress)인 discovery만 제출합니다"
+                          + ("(이미 제출됨: 중복 제출 거부)." if status == "awaiting_approval" else "."))
+        if not (rev or "").isdigit() or a.revision != int(rev) + 1:
+            raise Blocked("revision_mismatch", f"제출 revision은 현재 revision({rev})의 다음 값({int(rev) + 1 if (rev or '').isdigit() else '?'})이어야 합니다(요청 {a.revision}).")
+        rec = approved_record(lines, *approved_block(lines, s, e))
+        if rec != {"revision": "null", "at": "null", "hashes": {}}:
+            raise Blocked("state_inconsistent", "작성 중인데 discovery 승인 기록이 남아 있습니다. 재검토(T7) 절차 없이 상태를 바꾼 것으로 보여 제출하지 않습니다.", approved=rec)
+        ps_, pe_ = stage_span(lines, "planning")
+        p_status = get_scalar(lines, ps_, pe_, "status")
+        if p_status not in ("locked", "not_started", "outdated"):
+            raise Blocked("state_inconsistent", f"discovery 작성 중인데 planning이 {p_status}입니다(locked·not_started·outdated여야 함).")
+        files = ARTIFACTS["discovery"]
+        missing = [f for f in files if not (project / f).is_file()]
+        if missing:
+            raise Blocked("artifact_missing", "제출할 discovery 문서가 없습니다.", files=missing)
+        fm_bad = {f: frontmatter_revision(project / f) for f in files if frontmatter_revision(project / f) != str(a.revision)}
+        if fm_bad:
+            raise Blocked("frontmatter_mismatch", f"front matter revision이 제출 revision({a.revision})과 다른 파일이 있습니다.", files=fm_bad)
+        at = now()
+        submitted = {f: sha256(project / f) for f in files}
+        set_scalar(lines, s, e, "status", "awaiting_approval")
+        set_scalar(lines, s, e, "revision", str(a.revision))
+        prev_snap = read_snapshot(lines, *stage_span(lines, "discovery"))
+        write_snapshot(lines, "discovery", {"revision": a.revision, "at": at, "hashes": submitted})
+        short = " ".join(f"{Path(f).name.split('-')[0]}={h[:8]}…" for f, h in submitted.items())
+        append_history(lines, history_entry("discovery", "submitted", a.revision, f"{a.note or f'Discovery r{a.revision} 제출'}. 제출 해시 {short}", at))
+        ns, ne = stage_span(lines, "discovery")
+        os_, oe = stage_span(orig, "discovery")
+        post = [get_scalar(lines, ns, ne, "status") == "awaiting_approval", get_scalar(lines, ns, ne, "revision") == str(a.revision),
+                read_snapshot(lines, ns, ne) == {"revision": str(a.revision), "at": at, "hashes": submitted},
+                approved_record(lines, *approved_block(lines, ns, ne)) == {"revision": "null", "at": "null", "hashes": {}},
+                lines[:os_] == orig[:os_],
+                all(lines[slice(*stage_span(lines, k))] == orig[slice(*stage_span(orig, k))] for k in ("planning", "design")),
+                len(history_items(lines)) == len(history_items(orig)) + 1]
+        if not all(post):
+            raise Blocked("postcondition_failed", "전이 결과가 예상과 달라 쓰지 않았습니다(state.yaml 그대로). 상태 파일 형식을 확인하세요.", checks=post)
+        write_lines(project, lines)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    emit({"ok": True, "stage": "discovery", "status": "awaiting_approval", "revision": a.revision, "submitted_at": at, "submitted_hashes": submitted,
+          "replaced_snapshot": {"revision": prev_snap["revision"], "at": prev_snap["at"]} if prev_snap else None,
+          "note": "제출 해시는 submitted 스냅샷으로 기록했습니다(승인 해시 아님). approve는 이 스냅샷과 현재 문서가 같을 때만 승인합니다. "
+                  "승인은 사용자의 명시적 승인 후 approve로만 기록합니다."})
 
 
 def frontmatter_based(p: Path) -> str | None:
@@ -704,7 +772,8 @@ def cmd_migrate_snapshot(a) -> None:
     확인할 수 없으면(수동 제출·해시 없음·불일치) 기록하지 않습니다. 상태·revision·history는 바꾸지 않습니다."""
     project = Path(a.project).resolve()
     if a.stage != "planning":
-        raise Blocked("unsupported_stage", "migrate-snapshot은 planning만 지원합니다(discovery는 제출 스냅샷을 쓰지 않음).")
+        raise Blocked("unsupported_stage", "migrate-snapshot은 planning만 지원합니다. 스냅샷 없이 제출된 discovery는 제출 해시 기록이 없어 확인할 수 없으므로, "
+                      "수정 요청(T3) 후 submit --stage discovery로 다시 제출합니다.")
     if not a.confirm:
         raise Blocked("confirmation_required", "스냅샷 마이그레이션은 사용자가 승인한 경우에만 실행합니다. 확인 후 --confirm으로 실행하세요.")
     fd = lock(project)

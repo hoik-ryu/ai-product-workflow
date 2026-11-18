@@ -297,6 +297,8 @@ def main():
     docker_ok = subprocess.run(["docker", "info"], capture_output=True).returncode == 0
     if not docker_ok:
         check("I12d Docker 미가동 시 error 기록", code == 2 and s["verification"]["db"]["result"] == "error" and s["verification"]["db"]["reason"] == "docker_unavailable", s["verification"].get("db"))
+        results.append(("I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시", True, "SKIP"))
+        print("SKIP I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시  -- Docker 미가동(docker info 실패). Docker를 켜고 다시 실행")
     else:
         # 가짜 보일러플레이트에는 compose 파일이 없어 db 단계는 실패해야 하고, 실패가 기록되어야 합니다.
         check("I12d Docker 가동 시 db 실패 기록", code == 2 and s["verification"]["db"]["result"] == "fail" and s["status"] == "verify_failed", s["verification"].get("db"))
@@ -361,9 +363,10 @@ def main():
     code, out = pi("plan", "--project", str(d6), "--snapshot", str(dest6), "--source", str(FAKEBP), "--ref", "v2.0.0", "--sha", r["commit"])
     check("I13b 태그·manifest version 불일치 거부", code == 2 and out.get("error") == "version_mismatch", out)
 
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\nRESULT {passed}/{len(results)} passed  (임시 디렉터리: {BASE})")
-    sys.exit(0 if passed == len(results) else 1)
+    passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
+    skipped = sum(1 for _, _, m in results if m == "SKIP")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {BASE})")
+    sys.exit(0 if passed + skipped == len(results) else 1)
 
 
 if __name__ == "__main__":

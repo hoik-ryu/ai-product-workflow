@@ -26,6 +26,10 @@ LLM은 인터뷰, 문서 작성, 프리뷰 화면 작성만 맡습니다. 게이
   status     상태 요약(/product-start 상태 표시와의 관계 포함)
   theme-check 테마 계약 검사(읽기 전용): 스키마·04 이름 대조·값 형식·04와 값 차이·tokens.css 일치(--print-css로 기대 CSS 출력)
   migrate    v1 → v2 전환(--to v2 [--theme-file] [--enable-gate design_direction] [--confirm]). 기본은 계획만 출력, 추가만 하고 기존 승인·해시 유지, 멱등
+  explore-*  디자인 탐색(pd_explore.py): explore-config(켜기·끄기·측정 설정), explore-init·check·compare·verify·choose·skip·status(1차 구조·2차 시각 탐색, verify = 브라우저 측정 pd_measure.py),
+             explore-tokens·adopt·impact(2차: 후보 테마 토큰 CSS·후보 VD/테마 채택·후보 변경 영향, pd_visual.py),
+             explore-asset add·replace·confirm·style·list·check·sync(시각 자산 계약, pd_assets.py), explore-quality(시각 품질 평가 계약, pd_quality.py), explore-renderer status·enable·disable·allow-transfer(렌더러 계약, pd_render.py),
+             explore-ref add·list·privacy·extract-check·confirm·intent·candidates·policy·withdraw·track(레퍼런스 기반 탐색, pd_reference.py)
 
 모든 출력은 JSON이며, 차단·실패 시 종료 코드 2를 반환합니다.
 """
@@ -50,6 +54,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pd_core import *  # noqa: E402,F401,F403
 from pd_theme import *  # noqa: E402,F401,F403
 from pd_impact import *  # noqa: E402,F401,F403
+import pd_explore as EX  # noqa: E402  (디자인 탐색: design-exploration-design.md)
+import pd_measure as MS  # noqa: E402  (EX4 브라우저 측정)
+import pd_visual as VS  # noqa: E402  (EX5 2차 시각 탐색)
+import pd_assets as PA  # noqa: E402  (EX5.1 시각 자산 계약)
+import pd_quality as QL  # noqa: E402  (EX5.1 시각 품질 평가 계약)
+import pd_render as RDR  # noqa: E402  (EX7 렌더러 공통 계약·Figma 선택 연동)
+import pd_reference as RF  # noqa: E402  (레퍼런스 기반 탐색 EX3: §2.12)
 
 
 def annotate_problems(project: Path, st: dict, cv: dict) -> None:
@@ -100,6 +111,9 @@ def cmd_check(a) -> None:
     if workflow_of(st) == "v2":
         out["workflow"] = workflow_info(st)
         annotate_problems(project, st, cv)
+        exs = EX.exploration_summary(st)
+        if exs is not None:
+            out["exploration"] = exs
     if st["stages"]["ux_planning"]["status"] == "in_progress":
         pr = pending_round(project)
         out["pending_round"] = pr["pending"]
@@ -139,8 +153,19 @@ def cmd_start(a) -> None:
     st["stages"]["ux_spec"].update(structure_confirmed=None, based_on_ux_planning_revision=None)
     st["stages"]["preview"].update(based_on_ux_spec_revision=None, verification=None)
     add_history(st, "ux_planning", "started", 0, f"planning r{gate.get('planning_approved_revision')} 기준으로 시작")
+    workflow = getattr(a, "workflow", None) or "v1"
+    if workflow == "v2":  # 신규 v2: design_direction 게이트와 디자인 탐색(1차·2차) 기본 활성(설계 §2.3)
+        theme_rel = _theme_path_ok(project, a.theme_file) if getattr(a, "theme_file", None) else None
+        EX.start_v2_fields(st, theme_rel, sha256_file(project / theme_rel) if theme_rel else None)
+        add_history(st, "design", "workflow_v2", None, "start --workflow v2: design_direction 게이트·디자인 탐색(구조·시각) 기본 활성")
+    elif getattr(a, "theme_file", None):
+        block("invalid_arguments", "--theme-file은 --workflow v2와 함께만 씁니다.")
     save_state(project, st)
-    emit({"ok": True, "status": overall_status(st), "based_on": st["based_on"], "next": "UX Planning 인터뷰", "display_note": DISPLAY_NOTE})
+    out = {"ok": True, "status": overall_status(st), "based_on": st["based_on"], "next": "UX Planning 인터뷰", "display_note": DISPLAY_NOTE}
+    if workflow == "v2":
+        out.update(workflow=workflow_info(st), exploration=EX.exploration_summary(st),
+                   next="UX Planning 인터뷰 → 1차 구조 탐색(explore-init --phase structure) → 선택 → UXD 확정")
+    emit(out)
 
 
 def cmd_begin(a) -> None:
@@ -210,9 +235,18 @@ def cmd_trace(a) -> None:
         st = require_state(project)
         require_stage_usable(st, "design_direction")
         res = trace_design_direction(project, st)
+        if st.get("exploration"):
+            xe = EX.exploration_trace_errors(project, st, "visual")
+            res = {**res, "errors": res["errors"] + xe, "ok": res["ok"] and not xe}
         emit({"stage": a.stage, **res}, 0 if res["ok"] else 2)
     fn = {"ux_planning": trace_ux_planning, "structure": trace_structure, "ux_spec": trace_ux_spec}[a.stage]
     res = fn(project)
+    if a.stage == "ux_planning":
+        st = load_state(project)
+        if st is not None and st.get("exploration"):
+            xe = EX.exploration_trace_errors(project, st, "structure")
+            res["errors"] = res["errors"] + xe
+            res["ok"] = res["ok"] and not xe
     emit({"stage": a.stage, **res}, 0 if res["ok"] else 2)
 
 
@@ -265,6 +299,10 @@ def cmd_submit(a) -> None:
             block("pending_questions", "답변을 기다리는 질문이 있거나 질문 기록 형식이 맞지 않아 제출할 수 없습니다.",
                   pending=pr["pending"], errors=pr["errors"])
         trace = trace_ux_planning(project)
+        if st.get("exploration"):
+            xe = EX.exploration_trace_errors(project, st, "structure")
+            trace = {**trace, "errors": trace["errors"] + xe, "ok": trace["ok"] and not xe}
+        EX.exploration_submit_check(project, st, "ux_planning")
     elif stage == "ux_spec":
         sc = s.get("structure_confirmed")
         carried = bool(sc) and sc.get("revision") != target and sc.get("signature") == structure_signature(project)
@@ -276,6 +314,10 @@ def cmd_submit(a) -> None:
         trace = trace_ux_spec(project)
     elif stage == "design_direction":
         trace = trace_design_direction(project, st)
+        if st.get("exploration"):
+            xe = EX.exploration_trace_errors(project, st, "visual")
+            trace = {**trace, "errors": trace["errors"] + xe, "ok": trace["ok"] and not xe}
+        EX.exploration_submit_check(project, st, "design_direction")
     else:
         require_dd_gate(st, "제출")
         pc = preview_check(project, st)
@@ -291,9 +333,12 @@ def cmd_submit(a) -> None:
             block("preview_not_verified", "현재 프리뷰 파일로 preview-verify가 통과한 기록이 없습니다. preview-verify를 실행하세요.")
     if trace is not None and not trace["ok"]:
         block("trace_failed", "추적성 검사를 통과하지 못했습니다.", **trace)
+    asnap = _dd_assets_or_block(project, st) if stage == "design_direction" else None
     s["revision"] = target
     s["status"] = "awaiting_approval"
     s["submitted"] = {"revision": target, "at": now(), "hashes": cur}
+    if asnap is not None:
+        s["submitted"]["assets"] = asnap
     if stage == "preview" and workflow_of(st) == "v2":
         s["submitted"].update(preview_v2_hashes(project, st))
         if gate_on(st):
@@ -303,6 +348,16 @@ def cmd_submit(a) -> None:
     emit({"ok": True, "stage": stage, "status": "awaiting_approval", "revision": target,
           "trace": trace, "warnings": (trace or {}).get("warnings", []),
           "next": f"r{target}을 제시하고 명시적 승인을 받습니다."})
+
+
+def _dd_assets_or_block(project: Path, st: dict) -> dict:
+    """Design Direction 제출·승인 시 자산 스냅샷(P0-1). 권리 확인 근거가 없거나 바뀐 자산이 승인 VD에 있으면 거부."""
+    import pd_assets as PA
+    snap, errs = PA.dd_asset_snapshot(project, st)
+    if errs:
+        block("asset_rights_unverified", "승인 VD의 자산 중 권리 확인 근거(explore-asset confirm 기록)가 없거나 파일이 바뀐 자산이 있습니다. "
+              "사용자 확인 후 explore-asset confirm으로 기록하거나 VD 관련에서 뺍니다.", assets=errs)
+    return snap
 
 
 def cmd_approve(a) -> None:
@@ -316,6 +371,9 @@ def cmd_approve(a) -> None:
         block("not_awaiting_approval", f"{stage} 상태가 {s['status']}입니다. 제출(submit)된 revision만 승인할 수 있습니다.")
     if a.revision != s["revision"]:
         block("revision_mismatch", f"승인 대상 revision은 r{s['revision']}입니다(요청: r{a.revision}).")
+    xphase = {"ux_planning": "structure", "design_direction": "visual"}.get(stage)
+    if xphase and EX.exploration_enabled(st, xphase) and ((st.get("exploration") or {}).get(xphase) or {}).get("status") == "chosen":
+        EX.require_choice_current(project, st, xphase)  # P1-1: 제출 이후 상위 기준이 바뀐 선택으로 승인하지 않음
     cur = stage_current_hashes(project, stage)
     changed = diff_hashes(s["submitted"]["hashes"], cur)
     if stage == "preview" and workflow_of(st) == "v2":
@@ -324,6 +382,16 @@ def cmd_approve(a) -> None:
             block("theme_changed", "제출한 뒤 테마 파일이 바뀌었습니다. 프리뷰를 다시 검증·제출해야 합니다(reopen --stage preview).")
     if changed:
         block("changed_since_submit", "제시한 뒤 파일이 바뀌었습니다. 다시 제시(reopen → 수정 → submit)해야 합니다.", paths=changed)
+    asnap = None
+    if stage == "design_direction":
+        asnap = _dd_assets_or_block(project, st)
+        sub_assets = (s["submitted"] or {}).get("assets")
+        if sub_assets is None and asnap:
+            block("submission_assets_missing", "제출 기록에 자산 스냅샷이 없습니다(이전 방식 제출). 제출 시점 자산과 같은지 확인할 수 없어 승인하지 않습니다. "
+                  "reopen --stage design_direction 후 다시 제출합니다.")
+        if sub_assets is not None and sub_assets != asnap:
+            block("changed_since_submit", "제출한 뒤 Design Direction 자산(파일·레지스트리·권리 확인)이 바뀌었습니다. 다시 제출해야 합니다.",
+                  paths=sorted(set(sub_assets) ^ set(asnap) | {k for k in set(sub_assets) & set(asnap) if sub_assets[k] != asnap[k]}))
     if stage == "preview" and gate_on(st):
         require_dd_gate(st, "승인")
         if (s["submitted"] or {}).get("design_direction_revision") != st["stages"]["design_direction"]["approved"]["revision"]:
@@ -347,7 +415,10 @@ def cmd_approve(a) -> None:
         s["approved"].update(ux_spec_revision=ux["revision"], ux_spec_hashes=ux["hashes"],
                              approved_vds=sorted(k for k, v in dd_vds(project).items() if v == "승인"),
                              renderer=_first_word(field_line(md_section(strip_fences(read_text(project, DD_FILE)), "렌더링 경로"), "렌더러")),
-                             theme_hash=theme_hash(project, st))
+                             theme_hash=theme_hash(project, st), assets=asnap or {})
+    xb = EX.exploration_basis(st, stage)
+    if xb is not None:  # 탐색 선택 근거(추적만, 승인 판정·해시에 쓰지 않음)
+        s["exploration_basis"] = xb
     add_history(st, stage, "approved", s["revision"], a.note or "사용자 명시적 승인")
     if workflow_of(st) == "v1":
         nxt = NEXT_STAGE.get(stage)
@@ -392,8 +463,8 @@ def cmd_reopen(a) -> None:
 def cmd_impact(a) -> None:
     if getattr(a, "design", False):
         return cmd_impact_design(a)
-    if getattr(a, "request", None) or getattr(a, "base", None):
-        block("invalid_arguments", "--request와 --base는 --design과 함께만 씁니다.")
+    if getattr(a, "request", None) or getattr(a, "base", None) or getattr(a, "choice", None):
+        block("invalid_arguments", "--request·--base·--choice는 --design과 함께만 씁니다.")
     project = Path(a.project).resolve()
     st = require_state(project)
     commit = st["based_on"].get("planning_commit")
@@ -438,7 +509,20 @@ def cmd_impact_design(a) -> None:
     declared = (st.get("config") or {}).get("workflow")
     applied = workflow_of(st)
     ctx = design_context(project)
-    if a.request:
+    ctx["choices"] = {c["id"] for ph in ("structure", "visual") for c in (((st.get("exploration") or {}).get(ph) or {}).get("choices") or [])}
+    exploration = None
+    if getattr(a, "choice", None):  # EX6: 탐색 선택에서 영향 사실을 자동으로 만듭니다(파일·요청 대신)
+        if a.request:
+            block("invalid_arguments", "--choice와 --request는 함께 쓰지 않습니다.")
+        exploration = VS.choice_impact(project, st, a.choice)
+        items = []
+        for it in exploration["items"]:
+            facts = [classify_fact(f, ctx) for f in it["facts"]]
+            hint = next((f["evidence"].get("stage_hint") for f in facts if f["evidence"].get("stage_hint")), None)
+            items.append(aggregate_item(it["id"], it["summary"], facts, st, doc_stage=hint))
+        unrelated: list[str] = []
+        source = {"mode": "choice", "choice": a.choice}
+    elif a.request:
         req_path = Path(a.request)
         req_path = req_path if req_path.is_absolute() else (Path.cwd() / req_path)
         items = []
@@ -446,7 +530,8 @@ def cmd_impact_design(a) -> None:
             facts = [classify_fact(f if isinstance(f, dict) else {"kind": None}, ctx) for f in it["facts"]]
             if not facts:
                 facts = [classify_fact({"kind": None}, ctx)]
-            items.append(aggregate_item(it["id"], it.get("summary", ""), facts, st))
+            hint = next((f["evidence"].get("stage_hint") for f in facts if f["evidence"].get("stage_hint")), None)
+            items.append(aggregate_item(it["id"], it.get("summary", ""), facts, st, doc_stage=hint))
         unrelated: list[str] = []
         source = {"mode": "request", "request": str(req_path)}
     else:
@@ -475,7 +560,8 @@ def cmd_impact_design(a) -> None:
           "summary": {**counts, "by_category": by_cat, "reapproval_stages": reapproval,
                       "requires_user_decision": [i["id"] for i in items if i["requires_user_decision"]]},
           "categories": {k: {**v, "target_available": v["target"] in IMPLEMENTED_STAGES and v["target"] in order} for k, v in CHANGE_CATEGORIES.items()},
-          "rules_ref": "skills/product-design/reference/change-impact.md", "read_only": True, "notes": notes})
+          "rules_ref": "skills/product-design/reference/change-impact.md", "read_only": True, "notes": notes,
+          **({"exploration": {k: v for k, v in exploration.items() if k != "items"}} if exploration else {})})
 
 
 def cmd_refs(a) -> None:
@@ -757,7 +843,8 @@ def cmd_status(a) -> None:
           "based_on": {k: st["based_on"].get(k) for k in ("discovery_revision", "planning_revision", "planning_commit")},
           "validity": st.get("validity"), "gate_ok": gate["ok"], "state_yaml_design_status": gate.get("state_yaml_design_status"),
           "cross_verify": cv, "next": next_action(st), "display_note": DISPLAY_NOTE,
-          **({"workflow": workflow_info(st)} if workflow_of(st) == "v2" else {})})
+          **({"workflow": workflow_info(st)} if workflow_of(st) == "v2" else {}),
+          **({"exploration": EX.exploration_summary(st)} if EX.exploration_summary(st) is not None else {})})
 
 
 class JsonArgParser(argparse.ArgumentParser):
@@ -776,7 +863,7 @@ def main() -> None:
         return s
 
     add("check", cmd_check)
-    add("start", cmd_start)
+    s = add("start", cmd_start); s.add_argument("--workflow", choices=WORKFLOWS, default="v1"); s.add_argument("--theme-file")
     s = add("begin", cmd_begin); s.add_argument("--stage", required=True, choices=ALL_STAGES)
     s = add("done", cmd_done); s.add_argument("--path", required=True)
     s = add("trace", cmd_trace); s.add_argument("--stage", required=True, choices=("ux_planning", "structure", "ux_spec", "design_direction"))
@@ -786,7 +873,7 @@ def main() -> None:
     s.add_argument("--revision", required=True, type=int); s.add_argument("--note", default="")
     s = add("reopen", cmd_reopen); s.add_argument("--stage", required=True, choices=ALL_STAGES); s.add_argument("--reason", required=True)
     s = add("impact", cmd_impact); s.add_argument("--design", action="store_true")
-    s.add_argument("--request"); s.add_argument("--base")
+    s.add_argument("--request"); s.add_argument("--base"); s.add_argument("--choice")
     add("pending", cmd_pending)
     s = add("rebase", cmd_rebase); s.add_argument("--confirm", action="store_true")
     s = add("refs", cmd_refs); s.add_argument("--id", required=True, action="append")
@@ -800,6 +887,44 @@ def main() -> None:
     s.add_argument("--enable-gate", choices=GATES)
     s.add_argument("--replace-theme-file", action="store_true")
     s = add("theme-check", cmd_theme_check); s.add_argument("--print-css", action="store_true")
+    s = add("explore-config", EX.cmd_explore_config)
+    g = s.add_mutually_exclusive_group()
+    g.add_argument("--enable", choices=EX.PHASES + ("all",)); g.add_argument("--disable", choices=EX.PHASES + ("all",))
+    s.add_argument("--note", default=""); s.add_argument("--confirm", action="store_true")
+    s.add_argument("--measure-cmd"); s.add_argument("--measure-method", choices=MS.METHODS); s.add_argument("--measure-viewports")
+    s = add("explore-init", EX.cmd_explore_init); s.add_argument("--phase", required=True, choices=EX.PHASES)
+    s.add_argument("--mode", choices=("ai", "reference", "mixed"), default="ai"); s.add_argument("--variants", type=int)
+    s.add_argument("--targets", default=""); s.add_argument("--parent"); s.add_argument("--base"); s.add_argument("--intent")
+    s.add_argument("--goal", action="append"); s.add_argument("--feedback", default="")
+    s = add("explore-check", EX.cmd_explore_check); s.add_argument("--round", required=True)
+    s = add("explore-compare", EX.cmd_explore_compare); s.add_argument("--round", required=True)
+    s = add("explore-tokens", VS.cmd_explore_tokens); s.add_argument("--round", required=True); s.add_argument("--variants", default="")
+    s = add("explore-adopt", VS.cmd_explore_adopt); s.add_argument("--round", required=True)
+    s = add("explore-impact", VS.cmd_explore_impact); s.add_argument("--ref"); s.add_argument("--items", default="")
+    s = add("explore-verify", MS.cmd_explore_verify); s.add_argument("--round", required=True); s.add_argument("--variants", default="")
+    s.add_argument("--method", choices=MS.METHODS); s.add_argument("--viewports"); s.add_argument("--timeout", type=int)
+    s.add_argument("--asset-fallback", action="store_true")
+    s = add("explore-quality", QL.cmd_explore_quality); s.add_argument("--round", required=True)
+    s = add("explore-renderer", RDR.cmd_explore_renderer)
+    s.add_argument("action", choices=("status", "enable", "disable", "allow-transfer")); s.add_argument("kind", nargs="?", choices=("figma", "adapter"))
+    s.add_argument("--data-scope"); s.add_argument("--name"); s.add_argument("--what"); s.add_argument("--note", default="")
+    s = add("explore-asset", PA.cmd_explore_asset)
+    s.add_argument("action", choices=("add", "replace", "confirm", "style", "list", "check", "sync"))
+    s.add_argument("--file"); s.add_argument("--id"); s.add_argument("--kind"); s.add_argument("--role"); s.add_argument("--source")
+    s.add_argument("--license"); s.add_argument("--refs", default=""); s.add_argument("--depicts", default=""); s.add_argument("--fallback")
+    s.add_argument("--set", action="append"); s.add_argument("--round"); s.add_argument("--note", default="")
+    s = add("explore-choose", EX.cmd_explore_choose); s.add_argument("--round", required=True)
+    s.add_argument("--variant"); s.add_argument("--per-target"); s.add_argument("--note", default="")
+    s.add_argument("--evidence", action="append"); s.add_argument("--feedback", action="append"); s.add_argument("--coverage-note", default="")
+    s.add_argument("--measurement-waiver", default=""); s.add_argument("--axes", default="")
+    s = add("explore-skip", EX.cmd_explore_skip); s.add_argument("--phase", required=True, choices=EX.PHASES); s.add_argument("--note", default="")
+    add("explore-status", EX.cmd_explore_status)
+    s = add("explore-ref", RF.cmd_explore_ref)
+    s.add_argument("action", choices=("add", "list", "privacy", "extract-check", "confirm", "intent", "candidates", "policy", "withdraw", "track"))
+    s.add_argument("--file"); s.add_argument("--rights", default="unknown"); s.add_argument("--source-kind", default="user_file")
+    s.add_argument("--ref"); s.add_argument("--by"); s.add_argument("--result"); s.add_argument("--items"); s.add_argument("--decision")
+    s.add_argument("--use", action="append"); s.add_argument("--only", default=""); s.add_argument("--note", default="")
+    s.add_argument("--limit", action="append")
     a = ap.parse_args()
     try:
         a.fn(a)

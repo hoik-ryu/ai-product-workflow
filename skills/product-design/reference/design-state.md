@@ -214,6 +214,25 @@ python3 $SKILL/scripts/product_design.py migrate --project "$PWD" --to v2 --them
 
 **테마 파일 경로 변경**: `migrate --to v2 --theme-file <새 경로> --replace-theme-file`(계획) → `--confirm`. 새 파일은 계약 검사를 통과해야 하고, `theme_history`에 `{from, to, from_hash, to_hash, at}`, history에 `theme_file_changed`를 남깁니다. 내용이 같으면 프리뷰 영향 없음, 다르면 승인된 프리뷰가 `theme_changed`. 이전 파일은 지우지 않습니다.
 
+### 디자인 탐색(design_exploration)
+
+설계: `docs/roadmap/design-exploration-design.md`, 절차: `reference/exploration.md`. 1차 구조 탐색(UX Planning)과 2차 시각 탐색(Design Direction)이 구현되어 있습니다.
+
+| 항목 | 내용 |
+|---|---|
+| 설정 `config.exploration` | `{structure: {enabled}, visual: {enabled}, renderer: "html", measure_cmd, measure{method, viewports}, keep_unselected, limits, source, at}`. **없으면 탐색 꺼짐**(기존 프로젝트 그대로) |
+| 상태 `exploration` | `{structure|visual: {status: not_started|in_progress|chosen|skipped, rounds[], choice, choices[], skip}, activations[]}` |
+| 기본 활성 | `start --workflow v2`만(게이트 `design_direction`도 켜짐). `migrate --to v2`는 탐색을 켜지 않음 |
+| 켜기·끄기 | `explore-config`(계획 → 사용자 문장 `--note` + `--confirm`). 2차는 `gates.design_direction`이 켜져 있어야 함(`design_direction_gate_required`). 기존 필드는 바꾸지 않음(쓰기 전 `_preserved` 검사) |
+| 제출 조건 | 1차가 켜져 있으면 `submit --stage ux_planning`에: 선택(`chosen`) 또는 사용자 skip, 선택 ID를 근거로 하는 UXD, 선택 이후 보존 파일 불변 |
+| 승인 | 승인 판정·해시는 그대로. 승인 시 추적용 `stages.ux_planning.exploration_basis`(선택 ID·선택 기록 해시 또는 skip)만 추가 |
+| 측정(EX4) | 라운드 `measurements[]{run_id, at, cmd, method, viewports, status: completed|not_run|invalid, reason, tool, browser, report, report_sha256, variants{시안: {basis, blocking[], warnings[], results[{target, viewport, requested, actual{width,height,dpr}, screenshot{path,sha256,width,height}, …}]}}}`. 선택 기록에 `measurement`(passed|not_run|waived)·`measurement_detail`·`visually_reviewed: "model"`. 리포트·스크린샷은 `design-explore/<라운드>/shots/<run_id>/`(Git 제외) |
+| 2차 시각(EX5) | 라운드 `V##`(phase visual, basis에 ux_spec_revision·대상 구조 지문 해시), manifest 시안 `theme_candidate`·`emphasis`, 시안 폴더 `theme.json`·`tokens.css`(엔진 생성). 선택 기록 `axes`(축별 시안), `exploration.visual.adoption{round, choice, vds[], token_vd, candidate_tokens, official_before, cr_tokens, files, approved: false}` |
+| 자산·품질(EX5.1) | 자산 레지스트리 `design-profile/assets.json`(design-assets/v1: icon_style, assets{AST-nnn: kind, role, file, sha256, format, source, rights{license, confirmed_by_user, statement}, refs, depicts, fallback}) — 상태 파일 밖 프로젝트 파일. 라운드 `revision{base, depth, goals[], feedback}`, `quality{at, valid, sha256}`, 측정 기록 `asset_fallback`, 결과 `fill`. 라운드 폴더 `_assets/`(자산 사본)·`quality.json`(design-quality-review/v1) |
+| 레퍼런스(EX3) | `exploration.references{REF-…: path·sha256·format·크기·rights·privacy{model,user}·tracked·withdrawn·extraction{hash,model}·confirmations}`, `exploration.intents[]{id, uses[{ref, axes, sha256, extraction_hash}], only, statement}`. 라운드·선택에 `mode`·`intent`, 선택 기록에 `reference`(출처 연결). 원본은 `design-explore/references/REF-…/original.*`(기본 Git 제외) |
+| 안정화(v1.0) | `exploration.asset_rights{AST-…: sha256, license, statement, at}`(권리 확인 근거 — explore-asset confirm만 기록), `stages.design_direction.submitted.assets`·`approved.assets{AST-…: file, sha256, entry_sha256, vds[], rights{license, statement, confirmed_at}}`(승인 자산 스냅샷, 없으면 이전 승인 — 자산을 공식으로 인정하지 않음), 선택 기록 `basis{planning_revision, ux_spec_revision, fingerprints}`(stale 판정), `config.exploration.measure_confirmed{cmd_sha256, files{경로: sha256}, statement, at}`(측정 명령 지문), 측정 기록 `provenance{cmd_sha256, files, confirmed_at, report_sha256, spec_sha256}`. 절차: `reference/exploration.md` 15절 |
+| 산출물 | `design-explore/`(승인 대상 아님). 시작 전 이미 있으면 `start`가 거부. 프리뷰가 시안과 같은 파일·참조를 쓰면 `preview-check` 오류 |
+
 ### 렌더러 경로(WF-D04)
 
 | 07 렌더러 | 경로 | 06에 필요한 기록(게이트 켜짐) |

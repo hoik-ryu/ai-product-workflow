@@ -50,4 +50,9 @@ python3 tests/product_build_exec_test.py      # /product-build 배치 실행(M2.
 python3 tests/product_build_verify_test.py    # /product-build AC 기반 자동 검증(M2.3)
 python3 tests/product_build_approval_test.py  # /product-build 증거 정책·최종 승인·영향 분석(M2.4)
 python3 tests/product_build_ledger_test.py    # /product-build 정책·편차 원장·decide·문서 반영(M2.4b)
+python3 tests/product_design_explore_test.py  # 디자인 탐색 EX1–EX7
+python3 tests/product_workflow_e2e_test.py    # EX8 전체 워크플로 E2E(--real-browser면 실제 Chrome 측정)
+python3 tests/product_stabilization_test.py   # v1.0 안정화 P0·P1 회귀
 ```
+
+전체 실행·집계: `python3 tests/run_all.py` — 스위트별 PASS / FAIL / SKIP을 따로 세고 실행 환경(pnpm·Docker·Chrome·Node·PD_FULL)을 함께 보고합니다. FAIL이 있으면 `FAILED`(종료 1), FAIL은 없고 SKIP이 있으면 `INCOMPLETE`(종료 3, `--allow-skip`이면 0), 둘 다 없을 때만 `PASSED`(종료 0)입니다. 전체 통과로 보려면 pnpm(프리뷰 빌드), Docker 실행(product_init I12f), `PD_FULL=1`(theme F1–F3)이 필요합니다. 실제 Chrome 측정은 `--e2e-real-browser`(Chrome·Node 20 이상).

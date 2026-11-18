@@ -248,9 +248,10 @@ def main() -> int:
               and all(s == "preview" for s, _ in kinds), kinds)
         check("F3 04·07 승인 문서 해시 불변", T.sha(d / T.SPEC[3]) == ui04 and state(d)["stages"]["design_direction"]["approved"]["hashes"][DD] == T.sha(d / DD))
 
-    passed = sum(1 for _, ok, _ in results if ok)
-    print(f"\nRESULT {passed}/{len(results)} passed  (임시 디렉터리: {root})")
-    return 0 if passed == len(results) else 1
+    passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
+    skipped = sum(1 for _, _, m in results if m == "SKIP")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":

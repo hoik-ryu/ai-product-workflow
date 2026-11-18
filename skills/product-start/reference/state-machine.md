@@ -25,7 +25,7 @@
 | # | 이전 | 이벤트 | 이후 | 부수 효과 |
 |---|---|---|---|---|
 | T1 | (상태 파일 없음) | `/product-start <아이디어>` | discovery `in_progress` | `state.yaml`, `discovery-notes.md` 생성. planning `locked`, design `locked` |
-| T2 | discovery `in_progress` | 인터뷰 완료, 초안 작성 | discovery `awaiting_approval` | `revision += 1`, history `submitted` |
+| T2 | discovery `in_progress` | 인터뷰 완료, 초안 작성 | discovery `awaiting_approval` | `ps_state.py submit --stage discovery --revision N+1 --confirm`으로만 기록: revision(정확히 +1)·front matter 검증, `revision += 1`, 제출 스냅샷 `submitted.{revision, at, hashes}` 기록, history `submitted`. 상태 직접 편집·`event submitted`는 쓰지 않음 |
 | T3 | 모든 `awaiting_approval` | 수정 요청 | 같은 단계 `in_progress` → `awaiting_approval` | 파일 수정(확인 후), `revision += 1`, history `changes_requested` + `submitted` |
 | T4 | discovery `awaiting_approval` | 명시적 승인 | discovery `approved` | `approved.{revision,at,hashes}` 기록. planning `locked` → `not_started` (T7로 이미 `outdated`면 `outdated` 유지) |
 | T5 | planning `not_started`/`outdated` | 사용자가 생성 확인 | planning `in_progress` | 02 → 05 순서로 생성. 파일 하나가 끝날 때마다 즉시 `artifacts_done`에 추가 |
@@ -76,7 +76,7 @@
 - 비교: `approve`·`check`가 현재 문서와 비교합니다. 내용·front matter 변경과 삭제는 모두 `changed_since_submission`입니다. 선택지: (a) 수정 요청(T3) 후 다시 제출, (b) 제출 시점 내용으로 복원.
 - 정리: 승인되면 스냅샷을 비웁니다(같은 전체 해시가 `approved.hashes`에, 앞 8자가 history `submitted`·`approved`에 남음). `approved` 상태에 스냅샷이 남아 있으면 `check`·`reopen`이 문제로 보고합니다.
 - 하위 호환: 스냅샷 블록이 없거나 `revision: null`이면 "스냅샷 없음"입니다. 상태 파일은 그대로 읽히며, planning이 `awaiting_approval`이면 `check`는 경고만 하고 `approve`는 거부합니다(`submission_snapshot_missing`). 처리: 사용자 승인 후 `ps_state.py migrate-snapshot --stage planning --revision N --confirm` — history의 마지막 planning 기록이 스크립트(`submit`)가 남긴 같은 revision의 `submitted`이고, 거기 적힌 파일별 제출 해시(앞 8자)가 현재 문서와 모두 같을 때만 현재 전체 해시를 스냅샷으로 기록합니다(`source: migrated`, `at`은 원래 제출 시각, 상태·history는 바꾸지 않음). 확인할 수 없으면(`snapshot_unverifiable`) 수정 요청(T3) 후 다시 제출합니다.
-- discovery: 같은 불변식을 적용하되, 제출 명령(T2 CLI)이 아직 없어 스냅샷이 있을 때만 비교합니다. 스냅샷이 없으면 기존 경로(승인 시점 해시 기록)를 유지합니다. discovery 제출 CLI를 추가할 때 스냅샷을 필수로 바꿉니다.
+- discovery: 같은 불변식을 적용합니다. T2는 `submit --stage discovery`로 스냅샷을 남기고, `approve`는 스냅샷이 없으면 거부합니다(`submission_snapshot_missing`). 하위 호환: 이미 `approved`인 discovery 기록은 그대로 인정합니다. 스냅샷 없이(상태 직접 편집 등) `awaiting_approval`이 된 discovery는 제출 해시 기록이 없어 마이그레이션할 수 없으므로, 수정 요청(T3) 후 `submit --stage discovery`로 다시 제출합니다(`migrate-snapshot`은 planning 전용).
 
 ### 승인된 문서가 변경된 경우(해시 불일치)
 

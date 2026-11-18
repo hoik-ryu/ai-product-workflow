@@ -16,7 +16,7 @@ from pathlib import Path
 
 from pb_core import (
     DD_FILE, DESIGN_STATE_REL, PLAN_JSON_REL, SCREENS_FILE, TRACE_FILE, UISYS_FILE, blocks_by_heading, block, digest, field_line,
-    is_protected, now, read_text, screen_info, sha_file, strip_comments, strip_fences, write_owned,
+    is_protected, now, read_design_state, read_text, screen_info, sha_file, strip_comments, strip_fences, write_owned,
 )
 from pb_exec import in_patterns
 from pb_scan import DEFAULT_EXCLUDE, MAX_FILE_BYTES, NON_SOURCE_TOP, TEXT_EXT, cmp_markers, import_re, is_test_path
@@ -25,6 +25,9 @@ from pb_scan import DEFAULT_EXCLUDE, MAX_FILE_BYTES, NON_SOURCE_TOP, TEXT_EXT, c
 from pd_theme import css_var_name, parse_css_vars, parse_tokens, read_theme, theme_check  # noqa: E402
 
 PD_THEME_IMPORTS = ("css_var_name", "parse_css_vars", "parse_tokens", "read_theme", "theme_check")
+# EX6: 디자인 탐색 격리·공식 디자인 근거(읽기 전용 모듈, product-design preview-check와 같은 규칙)
+import pd_guard as GD  # noqa: E402
+PD_GUARD_IMPORTS = ("findings", "symlink_findings", "message", "brief_sources", "official_design")
 
 UI_MAP_REL = "docs/build/ui-map.json"
 UI_MAP_FORMAT = "pb-ui-map/v1"
@@ -32,6 +35,8 @@ UI_DIR_REL = ".ai-workflow/build/ui"
 BRIEF_FORMAT = "pb-ui-brief/v1"
 PLAN_FORMAT = "pb-ui-plan/v1"
 PREVIEW_DIR = "design-preview"
+EXPLORE_DIR = "design-explore"  # /product-design 디자인 탐색 시안(승인 대상 아님). 프리뷰처럼 시각 참고만, 제품 코드에 쓰지 않음
+DESIGN_REF_DIRS = (PREVIEW_DIR, EXPLORE_DIR)
 SOURCES = ("existing", "library", "built")
 STATE_HOW = ("route", "query", "prop", "story", "test", "other")
 DATA_SOURCES = ("api", "mock", "local", "props")
@@ -58,7 +63,7 @@ LENGTH_RE = re.compile(r"(?<![\w.-])(\d+(?:\.\d+)?px)\b")
 def walk(project: Path, roots: list[str] | None, exclude: list[str] | None, exts) -> list[str]:
     """소스 파일 목록. 확장자는 호출자가 정합니다(프로필 [ui.audit].extensions ∪ scan 기본). 문서·상태·프리뷰 최상위는 제외."""
     ex = DEFAULT_EXCLUDE | set(exclude or [])
-    exts = set(exts)
+    exts = {str(x).lower() for x in exts}  # 확장자는 대소문자를 구분하지 않음(.CSS·.View도 검사 대상, P1-2)
     out, seen = [], set()
     for start in ([project / r for r in roots] if roots else [project]):
         if not start.exists():
@@ -76,7 +81,7 @@ def walk(project: Path, roots: list[str] | None, exclude: list[str] | None, exts
                     continue
                 if e.is_dir():
                     stack.append(e)
-                elif e.suffix in exts and rel not in seen:
+                elif e.suffix.lower() in exts and rel not in seen:
                     try:
                         if e.stat().st_size <= MAX_FILE_BYTES:
                             out.append(rel)
@@ -123,6 +128,19 @@ def norm(v: str) -> str:
 
 def bad_path(rel: str) -> bool:
     return not isinstance(rel, str) or not rel or rel.startswith("/") or ".." in Path(rel).parts
+
+
+def is_design_explore(rel: str) -> bool:
+    return rel == EXPLORE_DIR or rel.startswith(EXPLORE_DIR + "/")
+
+
+def explore_findings(project: Path, files: list[str]) -> list[dict]:
+    """배치 범위 파일에 디자인 탐색 산출물·미승인 디자인이 들어왔는지(설계 D4·EX6). 판정은 /product-design과 같은 pd_guard 규칙:
+    동일·주석/공백만 다른 복사(explore_copy), 시안 CSS 부분 복사(explore_copy_partial), 경로 참조·심볼릭 링크(explore_reuse),
+    탐색 후보 토큰(explore_token), 레퍼런스 원본(reference_asset_embedded), 미승인 자산(asset_unapproved). 시각적 유사성은 판정하지 않습니다."""
+    if not (project / EXPLORE_DIR).is_dir() and not any(f.lower().endswith(GD.IMAGE_EXTS) for f in files):
+        return []
+    return GD.findings(project, files)
 
 
 def is_preview(rel: str) -> bool:
@@ -382,16 +400,40 @@ def approved_tokens(project: Path) -> tuple[dict[str, str], str]:
     """승인된 토큰 이름·값. v2 테마 계약이 있으면 테마 적용값(+테마에 없는 04 값), 아니면 04 표."""
     p = project / DESIGN_STATE_REL
     if p.exists():
-        try:
-            dst = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            dst = {}
+        dst = read_design_state(project)
         rel = (dst.get("config") or {}).get("theme_file")
         if rel and (dst.get("config") or {}).get("workflow") == "v2" and read_theme(project, rel)["contract"]:
             tc = theme_check(project, dst)
             if tc.get("effective_tokens") is not None:
                 return dict(tc["effective_tokens"]), f"theme:{rel}"
     return parse_tokens(read_text(project, UISYS_FILE)), UISYS_FILE
+
+
+def theme_approval(project: Path) -> dict:
+    """승인 당시 테마와 현재 테마 비교(EX8). 승인 기록(게이트 켜짐: Design Direction, 아니면 프리뷰)의 theme_hash와 현재 파일 해시.
+    status: approved(같음) | changed_since_approval(다름 — 현재 값은 승인값이 아님) | not_approved(승인 기록 없음) | no_theme."""
+    p = project / DESIGN_STATE_REL
+    try:
+        dst = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        dst = None
+    if not isinstance(dst, dict) or not isinstance(dst.get("config") or {}, dict) or not isinstance(dst.get("stages") or {}, dict):
+        return {"status": "design_state_invalid", "theme_file": None}
+    rel = (dst.get("config") or {}).get("theme_file")
+    if not rel or (dst.get("config") or {}).get("workflow") != "v2":
+        return {"status": "no_theme", "theme_file": rel}
+    cur = sha_file(project / rel) if (project / rel).is_file() else "missing"
+    stages = dst.get("stages") or {}
+    gate = bool(((dst.get("config") or {}).get("gates") or {}).get("design_direction"))
+    order = ("design_direction", "preview") if gate else ("preview", "design_direction")
+    for stg in order:
+        s = stages.get(stg) or {}
+        rec = s.get("approved") if s.get("status") == "approved" else None
+        h = (rec or {}).get("theme_hash")
+        if h:
+            return {"status": "approved" if h == cur else "changed_since_approval", "theme_file": rel, "stage": stg,
+                    "approved_revision": rec.get("revision"), "approved_hash": h, "current_hash": cur}
+    return {"status": "not_approved", "theme_file": rel, "current_hash": cur}
 
 
 def resolve_vars(vars_: dict[str, str]) -> dict[str, str]:
@@ -464,6 +506,20 @@ def token_check(project: Path, umap: dict) -> dict:
     res["counts"] = {"approved": len(approved), "matched": len(approved) - len(res["missing"]) - len(res["mismatch"]) - len(res["excepted"]),
                      "missing": len(res["missing"]), "mismatch": len(res["mismatch"]), "excepted": len(res["excepted"])}
     res["ok"] = not res["missing"] and not res["mismatch"]
+    ta = theme_approval(project) if source.startswith("theme:") else {"status": "no_theme"}
+    res["theme_approval"] = ta
+    res["expected_basis"] = "approved"
+    if ta["status"] == "changed_since_approval":
+        # 승인 당시 테마 내용은 해시만 남아 있어 복원할 수 없습니다. 현재 테마 값을 '승인값'으로 표시하지 않고 검사를 실패시킵니다(EX8 수정).
+        res["expected_basis"] = "current_theme_unapproved"
+        for x in res["missing"] + res["mismatch"] + res["excepted"]:
+            x["expected_basis"] = "current_theme_unapproved"
+        res["ok"] = False
+        res["theme_changed_since_approval"] = True
+    elif ta["status"] == "design_state_invalid":
+        res["expected_basis"] = "unknown"
+        res["ok"] = False
+        res.setdefault("errors", []).append("디자인 상태 파일(.ai-workflow/design.json)의 형식이 올바르지 않아 승인 테마를 확인할 수 없습니다(design_state_invalid)")
     return res
 
 
@@ -591,9 +647,19 @@ def build_brief(project: Path, st: dict, plan: dict, bid: str, prof: dict, uprof
     acst = ac_states(project)
     cmps04 = uisys_cmps(project)
     vds = {k: v for k, v in dd_vd_blocks(project).items() if v["status"] == "승인"}
+    gsrc = GD.official_design(project)
+    if gsrc["design_direction_approved"]:  # EX6: 승인 기록의 VD만(승인 이후 07에서 '승인'으로 바꾼 후보는 쓰지 않음)
+        dropped = sorted(k for k in vds if k not in gsrc["approved_vds"])
+        vds = {k: v for k, v in vds.items() if k in gsrc["approved_vds"]}
+        if dropped:
+            warnings_pre = [f"{', '.join(dropped)}: 07에는 '승인'이지만 Design Direction 승인 기록에 없는 VD입니다(쓰지 않음, 재승인 필요)"]
+        else:
+            warnings_pre = []
+    else:
+        warnings_pre = []
     comps_map = (umap or {}).get("components") or {}
     deps = dep_closure(plan, bid)
-    warnings = []
+    warnings = list(warnings_pre)
     targets = (st.get("batches", {}).get(bid) or {}).get("ac_targets") or {}
     batch_acs = [a for a in b.get("acs") or [] if a in model["AC"]]
     screens, touches = {}, {}
@@ -658,7 +724,8 @@ def build_brief(project: Path, st: dict, plan: dict, bid: str, prof: dict, uprof
         "design": {"level": dinfo.get("level"), "workflow": dinfo.get("workflow"), "basis": dinfo.get("basis"),
                    "waiver": (st.get("batches", {}).get(bid) or {}).get("waiver")},
         "screens": screens, "touches": touches, "components": components,
-        "tokens": {"source": tsource, "approved": approved, "output": (umap or {}).get("tokens")},
+        "tokens": {"source": tsource, "approved": approved, "output": (umap or {}).get("tokens"),
+                   "theme_approval": theme_approval(project) if tsource.startswith("theme:") else {"status": "no_theme"}},
         "visual_decisions_global": gvds,
         "data": {"tasks": data_tasks, "providers": providers, "api_contract": {"path": contract, "exists": bool(contract) and (project / contract).is_file()}},
         "acs": batch_acs, "test_plan": b.get("test_plan") or [], "paths": b.get("paths") or {}, "depends_on": b.get("depends_on") or [],
@@ -667,11 +734,13 @@ def build_brief(project: Path, st: dict, plan: dict, bid: str, prof: dict, uprof
             "대응표에 있는 컴포넌트는 반드시 재사용합니다. 같은 컴포넌트를 새로 만들지 않습니다.",
             "색·간격 등은 승인된 토큰(토큰 출력 파일의 변수)으로 씁니다. 직접 값은 프로젝트가 허용한 예외만.",
             "design-preview/는 시각 참고만 합니다. import·복사하지 않습니다.",
+            "design-explore/(디자인 탐색 시안·후보 테마·후보 VD·탐색 자산)는 승인 전 실험 자료입니다. 복사·import·참조하지 않고, 승인된 VD·테마·권리 확인 자산(design_sources)만 씁니다.",
             "UI Plan(.ai-workflow/build/ui/<배치>/plan.json)을 쓰고 ui-plan-validate가 통과한 뒤 구현합니다.",
         ],
         "sources": sources, "warnings": warnings,
     }
     brief["layout"] = layout_info(project, list(screens), approved)
+    brief["design_sources"] = GD.brief_sources(project, list(screens))  # EX6: 공식 근거(승인 VD·권리 확인 자산), 탐색 선택은 출처로만
     if b.get("touches"):  # touches가 있는 배치만(소유 화면만 있는 배치의 Brief는 이전과 같음)
         brief["touched"] = touched_info(project, plan, b, sinfo, acst, model, batch_acs, vds, targets, warnings)
     brief["digest"] = brief_digest(brief)
@@ -872,8 +941,9 @@ PREVIEW_TEXT_KEYS = {"notes", "note", "description", "summary", "reason", "ratio
                      "intent", "trigger", "result", "action"}
 PREVIEW_EXEMPT_KEYS = {"visual_ref"}  # 시각 참고 표시(프리뷰 화면 위치)
 # 재사용 지시: 코드 수준(import·require·동적 import·CSS @import·셸 복사)과 문장 수준(복사·이식·그대로 가져옴 등). 부정문은 언급으로 봄.
-_REUSE_CODE_RE = re.compile(r"""\bimport\b[^\n]*?\bfrom\s*['"][^'"]*design-preview|\bimport\s*\(\s*['"][^'"]*design-preview|\brequire\s*\(\s*['"][^'"]*design-preview"""
-                            r"""|@import\s+(?:url\()?['"]?[^'"\s]*design-preview|(?:^|[\s;&|`])(?:cp|mv|rsync|git\s+mv|xcopy)\s+(?:-\S+\s+)*\S*design-preview""", re.I)
+_REUSE_CODE_RE = re.compile(r"""\bimport\b[^\n]*?\bfrom\s*['"][^'"]*design-(?:preview|explore)|\bimport\s*\(\s*['"][^'"]*design-(?:preview|explore)"""
+                            r"""|\brequire\s*\(\s*['"][^'"]*design-(?:preview|explore)|@import\s+(?:url\()?['"]?[^'"\s]*design-(?:preview|explore)"""
+                            r"""|(?:^|[\s;&|`])(?:cp|mv|rsync|git\s+mv|xcopy)\s+(?:-\S+\s+)*\S*design-(?:preview|explore)""", re.I)
 _REUSE_VERB_RE = re.compile(r"복사|복제|붙여\s*넣|옮겨|이식|그대로\s*(?:가져|써|사용|쓰)|재사용|가져와|\b(?:copy|copies|copied|paste|port|ported|reuse|reused|move|import|lift)\b", re.I)
 _NEGATION_RE = re.compile(r"않|말고|말 것|금지|없이|안\s*(?:함|합니다|한다|됨)|하지\s*마|\b(?:not|never|don't|do not|no|without|avoid)\b", re.I)
 
@@ -882,7 +952,7 @@ def _reuse_directive(text: str) -> bool:
     if _REUSE_CODE_RE.search(text):
         return True
     for sent in re.split(r"(?<=[.!?。])\s+|\n+|;\s*", text):
-        if PREVIEW_DIR in sent and _REUSE_VERB_RE.search(sent) and not _NEGATION_RE.search(sent):
+        if any(d in sent for d in DESIGN_REF_DIRS) and _REUSE_VERB_RE.search(sent) and not _NEGATION_RE.search(sent):
             return True
     return False
 
@@ -904,7 +974,7 @@ def preview_findings(obj, where: str = "", key: str | None = None, in_text: bool
             e, w = preview_findings(v, f"{where}[{i}]", key, in_text)
             errs += e
             warns += w
-    elif isinstance(obj, str) and PREVIEW_DIR in obj:
+    elif isinstance(obj, str) and any(d in obj for d in DESIGN_REF_DIRS):  # 프리뷰·디자인 탐색 시안(설계 D4)
         (warns if in_text and not _reuse_directive(obj) else errs).append(where)
     return errs, warns
 
