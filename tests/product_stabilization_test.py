@@ -326,6 +326,34 @@ def p1_measure(mid: Path, root: Path) -> None:
     check("P1-5g 지문 기록이 없는 이전 설정 → 재확인 전 실행 거부(자동 신뢰 안 함)", code == 2 and out.get("error") == "measure_cmd_unconfirmed", out)
 
 
+# ---------------------------------------------------------------- 승인 문장(파일럿 전 정리)
+def p1_approval_note(mid: Path, root: Path) -> None:
+    """product_design approve는 사용자 승인 문장(--note)이 필수 — 엔진이 승인 기록 문장을 지어내지 않음."""
+    m = copy_project(mid, root / "pnote")
+    vdc = (m / "_vdc.md").read_text()
+    DDT.write_07(m, 1, extra_vd=vdc.replace("- **상태**: 후보", "- **상태**: 승인"))
+    T.done_all(m, [DDT.DD])
+    T.G(m, "add", "-A")
+    T.G(m, "commit", "-qm", "dd draft")
+    code, out = pd(m, "submit", "--stage", "design_direction")
+    assert code == 0, out
+    hist0 = json.loads((m / ".ai-workflow/design.json").read_text())["history"]
+    res = {}
+    for name, extra in (("--note 없음", []), ("빈 문자열", ["--note", ""]), ("공백만", ["--note", "   "])):
+        before = raw(m)
+        c, o = T.pi_raw("approve", "--stage", "design_direction", "--revision", "1", *extra, "--project", str(m))
+        res[name] = (c, o.get("error"), raw(m) == before)
+    check("N1 approve에 --note가 없거나 비어 있으면 거부(approval_statement_required), 상태 파일 바이트 불변",
+          all(v == (2, "approval_statement_required", True) for v in res.values()), res)
+    c, o = T.pi_raw("approve", "--stage", "design_direction", "--revision", "1", "--note", "네, 이 방향으로 승인합니다(시뮬레이션)", "--project", str(m))
+    st = json.loads((m / ".ai-workflow/design.json").read_text())
+    last = [h for h in st["history"] if h["event"] == "approved" and h["stage"] == "design_direction"][-1:]
+    check("N2 사용자 문장을 주면 승인, history에는 그 문장 그대로(엔진 기본 문장 없음)",
+          c == 0 and st["stages"]["design_direction"]["status"] == "approved" and last and last[0]["note"] == "네, 이 방향으로 승인합니다(시뮬레이션)"
+          and "사용자 명시적 승인" not in json.dumps(st["history"], ensure_ascii=False), (o.get("error"), last))
+    check("N3 기존 승인 기록(이전 history 항목)은 그대로", st["history"][:len(hist0)] == hist0, len(hist0))
+
+
 def main() -> int:
     keep = sys.argv[sys.argv.index("--keep") + 1] if "--keep" in sys.argv else None
     root = Path(keep) if keep else Path(tempfile.mkdtemp(prefix="product-stabilization-"))
@@ -336,7 +364,8 @@ def main() -> int:
         approved, mid = build_projects(root)
         for name, fn, args in (("P0 자산", p0_assets, (approved, mid, root)), ("P0 CSS", p0_css, (approved, root)),
                                ("P1-1", p1_stale, (approved, root)), ("P1-2", p1_verify, (approved, root)),
-                               ("P1-4", p1_discovery, (root,)), ("P1-5", p1_measure, (mid, root))):
+                               ("P1-4", p1_discovery, (root,)), ("P1-5", p1_measure, (mid, root)),
+                               ("승인 문장", p1_approval_note, (mid, root))):
             try:
                 fn(*args)
             except Exception as e:  # noqa: BLE001 — 한 그룹의 예외가 다른 그룹 판정을 막지 않게

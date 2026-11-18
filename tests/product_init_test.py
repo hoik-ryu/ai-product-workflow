@@ -7,9 +7,12 @@
 import hashlib, json, os, re, shutil, subprocess, sys, tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _tmpdirs as TMP  # noqa: E402  (이번 실행이 만든 임시 폴더만 정리)
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = str(ROOT / "skills/product-init/scripts/product_init.py")
-BASE = Path(tempfile.mkdtemp(prefix="product-init-test-"))
+BASE = TMP.mkdtemp("product-init-test-")  # 직접 실행 시 종료하며 정리(import만 하면 유지 — harness 픽스처용)
 FAKEBP = BASE / "fakebp"
 WORK = BASE / "work"
 results = []
@@ -26,8 +29,24 @@ def G(repo, *args):
     return sh("git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@example.com", *args)
 
 
+DOCKER_PROBE_TIMEOUT = 20  # 엔진 docker_available()과 같은 값(초)
+
+
+def docker_probe(timeout=DOCKER_PROBE_TIMEOUT, env=None) -> str:
+    """`docker info`로 Docker 상태를 봅니다. 무한 대기하지 않습니다.
+    up: 응답·성공 / down: 응답했지만 실패 / timeout: 시간 안에 응답 없음 / missing: docker 명령 없음."""
+    try:
+        rc = subprocess.run(["docker", "info"], capture_output=True, timeout=timeout, env=env).returncode
+    except FileNotFoundError:
+        return "missing"
+    except subprocess.TimeoutExpired:  # subprocess.run이 자식(docker)을 종료한 뒤 예외를 올립니다.
+        return "timeout"
+    return "up" if rc == 0 else "down"
+
+
 def pi(*args):
     p = subprocess.run([sys.executable, "-I", SCRIPT, *args], capture_output=True, text=True)
+    TMP.adopt_from_output(p.stdout, r"product-init-verify-[a-z]+-[A-Za-z0-9_]+")  # verify가 만든 로그 폴더(이 실행의 것만)
     try:
         out = json.loads(p.stdout)
     except json.JSONDecodeError:
@@ -153,7 +172,7 @@ history: []
 
 
 def snapshot(source, ref, sha_, dest_name):
-    dest = Path(tempfile.mkdtemp(prefix="pi-snap-")) / dest_name
+    dest = TMP.mkdtemp("pi-snap-") / dest_name
     return pi("snapshot", "--source", str(source), "--ref", ref, "--sha", sha_, "--dest", str(dest)), dest
 
 
@@ -279,7 +298,10 @@ def main():
     at_before = {k: v["at"] for k, v in state(d)["verification"].items() if isinstance(v, dict)}
     procs = {stg: subprocess.Popen([sys.executable, "-I", SCRIPT, "verify", "--project", str(d), "--stage", stg],
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for stg in ("fe", "be")}
-    outs = {stg: json.loads(pr.communicate()[0]) for stg, pr in procs.items()}
+    raw_outs = {stg: pr.communicate()[0] for stg, pr in procs.items()}
+    for t in raw_outs.values():
+        TMP.adopt_from_output(t, r"product-init-verify-[a-z]+-[A-Za-z0-9_]+")
+    outs = {stg: json.loads(t) for stg, t in raw_outs.items()}
     ver = state(d)["verification"]
     ran = [stg for stg, o in outs.items() if o.get("error") != "state_busy"]
     lost = [stg for stg in ran if ver[stg]["at"] == at_before.get(stg) and ver[stg]["at"] != outs[stg]["verification"]["at"]]
@@ -294,16 +316,38 @@ def main():
     check("I12e 검증 기록 없는 프로젝트 볼륨 삭제 불허", out.get("volume_removal_allowed") is False and not re.search(r"\s(-v|--volumes)(\s|$)", out.get("down", "")), out)
     code, out = pi("verify", "--project", str(d), "--stage", "db")
     s = state(d)
-    docker_ok = subprocess.run(["docker", "info"], capture_output=True).returncode == 0
-    if not docker_ok:
+    docker = docker_probe()
+    if docker != "up":
+        # 엔진도 응답 없음(timeout)·실패·명령 없음을 docker_unavailable로 기록해야 합니다(이 판정은 SKIP이 아니라 검사).
         check("I12d Docker 미가동 시 error 기록", code == 2 and s["verification"]["db"]["result"] == "error" and s["verification"]["db"]["reason"] == "docker_unavailable", s["verification"].get("db"))
+        why = {"timeout": f"Docker 응답 없음(docker info {DOCKER_PROBE_TIMEOUT}초 timeout)",
+               "down": "Docker 미가동(docker info 실패)", "missing": "docker 명령 없음"}[docker]
         results.append(("I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시", True, "SKIP"))
-        print("SKIP I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시  -- Docker 미가동(docker info 실패). Docker를 켜고 다시 실행")
-    else:
+        print(f"SKIP I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시  -- {why}. Docker를 켜고 다시 실행")
+    else:  # Docker가 정상 응답하면 아래 검사의 실패는 FAIL입니다(SKIP으로 숨기지 않음).
         # 가짜 보일러플레이트에는 compose 파일이 없어 db 단계는 실패해야 하고, 실패가 기록되어야 합니다.
         check("I12d Docker 가동 시 db 실패 기록", code == 2 and s["verification"]["db"]["result"] == "fail" and s["status"] == "verify_failed", s["verification"].get("db"))
         code, out = pi("cleanup", "--project", str(d), "--dry-run")
         check("I12f 검증 프로젝트 기록 후에만 볼륨 삭제 허용 표시", out.get("volume_removal_allowed") is True and not re.search(r"\s(-v|--volumes)(\s|$)", out.get("down", "")), out)
+
+    # ---- Docker 응답 없음(무한 대기 방지): 가짜 docker로 확인. 실제 Docker는 건드리지 않습니다.
+    fake = BASE / "fakedocker"; fake.mkdir()
+    (fake / "docker").write_text('#!/bin/sh\ncase "$FAKE_DOCKER_MODE" in hang) exec sleep 60;; fail) exit 1;; *) exit 0;; esac\n')
+    (fake / "docker").chmod(0o755)
+    fenv = lambda mode: {**os.environ, "PATH": f"{fake}{os.pathsep}{os.environ.get('PATH', '')}", "FAKE_DOCKER_MODE": mode}
+    import time
+    t0 = time.monotonic(); got = docker_probe(timeout=1, env=fenv("hang")); took = time.monotonic() - t0
+    check("I12t 테스트의 docker 확인: 응답 없으면 timeout으로 끝남(무한 대기 없음)", got == "timeout" and took < 10, {"got": got, "took": round(took, 1)})
+    check("I12t2 테스트의 docker 확인: 실패=down, 성공=up, 명령 없음=missing",
+          docker_probe(timeout=5, env=fenv("fail")) == "down" and docker_probe(timeout=5, env=fenv("ok")) == "up"
+          and docker_probe(timeout=5, env={**os.environ, "PATH": str(fake / "none")}) == "missing")
+    t0 = time.monotonic()
+    p = subprocess.run([sys.executable, "-I", SCRIPT, "verify", "--project", str(d), "--stage", "db"],
+                       capture_output=True, text=True, env=fenv("hang"), timeout=120)
+    took = time.monotonic() - t0; s = state(d)
+    check("I12t3 엔진 verify db: docker 응답 없음 → timeout 후 docker_unavailable 기록(무한 대기 없음)",
+          p.returncode == 2 and s["verification"]["db"]["result"] == "error" and s["verification"]["db"]["reason"] == "docker_unavailable" and took < 60,
+          {"code": p.returncode, "took": round(took, 1), "db": s["verification"].get("db")})
 
     # ---- 재개 시 사용자 변경 감지
     d2, dest2, sha2, code, plan2 = planned("modified")
@@ -365,9 +409,9 @@ def main():
 
     passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
     skipped = sum(1 for _, _, m in results if m == "SKIP")
-    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {BASE})")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {BASE} — 종료 시 정리, 보존은 PW_KEEP_TMP=1)")
     sys.exit(0 if passed + skipped == len(results) else 1)
 
 
 if __name__ == "__main__":
-    main()
+    TMP.run(main)

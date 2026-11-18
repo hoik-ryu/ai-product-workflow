@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # /product-start — 아이디어 → Discovery → 승인 → Planning → 승인
 
-사용자의 **제품 프로젝트**(현재 작업 디렉터리)에서 ai-product-workflow의 Milestone 1을 실행합니다.
+사용자의 **제품 프로젝트**(현재 작업 디렉터리)에서 ai-product-workflow의 첫 단계(Discovery → Planning)를 실행합니다.
 
 보조 파일은 이 파일과 같은 디렉터리(이 Skill의 기본 디렉터리)에 있습니다. 각 단계에서 지시할 때 읽습니다.
 
@@ -111,9 +111,9 @@ disable-model-invocation: true
 - 수정 요청 → 상태를 `in_progress`로 바꾸고 `ps_state.py event --stage planning --event changes_requested ...`로 기록합니다. 영향받는 파일과 하위 ID를 파악합니다(예: FR이 바뀌면 해당 US, FLOW, AC). 설명 → 확인 → `file-safety.md`에 따라 반영 → 추적성 재점검 → 4단계 4번의 `submit`(revision + 1) → 다시 제시합니다. Planning 파일 4개는 단계 revision을 공유합니다. 그래서 내용이 바뀌지 않는 파일도 front matter `revision`만 올라간다는 사실을 설명에 포함해야 합니다.
 - 수정 요청이 실제로는 Discovery의 사실(문제, 사용자, 범위)에 관한 것이면 → Discovery를 다시 열어야 하고(T7), 그러면 planning이 `outdated`가 된다는 점을 설명하고 먼저 확인을 받습니다.
 
-## 6단계 — Milestone 1 완료
+## 6단계 — Planning 승인 완료
 
-승인된 revision, 파일 목록, 아직 해결되지 않은 Q/ASM, Design 단계가 열렸다는 사실(Milestone 1에서는 구현하지 않음)을 보고합니다. 산출물 커밋을 제안합니다. 예: `git add docs/planning .ai-workflow && git commit -m "..."`(실행은 사용자가 합니다).
+승인된 revision, 파일 목록, 아직 해결되지 않은 Q/ASM, Design 단계가 열렸다는 사실과 다음 단계(`/product-design`으로 UX 설계·디자인 진행, 이후 `/product-build`)를 보고합니다. 다음 Skill 실행은 사용자가 결정합니다. 산출물 커밋을 제안합니다. 예: `git add docs/planning .ai-workflow && git commit -m "..."`(실행은 사용자가 합니다).
 
 사용자가 승인된 문서를 바꾸려 하면 영향을 확인받은 뒤 `state-machine.md`의 T7(discovery) 또는 T9(planning)를 적용합니다.
 

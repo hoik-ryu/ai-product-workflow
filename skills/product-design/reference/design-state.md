@@ -120,7 +120,7 @@
 
 ### Design Direction 단계(WF-D02)
 
-명령은 다른 단계와 같습니다: `begin --stage design_direction` → 07 작성 → `trace --stage design_direction`(문서 검증) → `done --path docs/design/07-design-direction.md` → `submit --stage design_direction` → **"디자인 방향 승인"** → `approve --stage design_direction --revision N`. 수정은 `reopen --stage design_direction`.
+명령은 다른 단계와 같습니다: `begin --stage design_direction` → 07 작성 → `trace --stage design_direction`(문서 검증) → `done --path docs/design/07-design-direction.md` → `submit --stage design_direction` → **"디자인 방향 승인"** → `approve --stage design_direction --revision N --note "<사용자 승인 문장>"`. 수정은 `reopen --stage design_direction`.
 
 | 검사(`trace --stage design_direction`, 제출 조건) | 내용 |
 |---|---|

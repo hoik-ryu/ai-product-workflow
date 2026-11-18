@@ -20,6 +20,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _tmpdirs as TMP  # noqa: E402  (이번 실행이 만든 임시 폴더만 정리)
+
 ENGINE = Path(__file__).resolve().parent.parent
 SCRIPT = ENGINE / "skills/product-design/scripts/product_design.py"
 results: list[tuple[str, bool, str]] = []
@@ -43,7 +46,23 @@ def G(d, *args):
     return sh("git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args, cwd=d)
 
 
+TEST_APPROVAL_NOTE = "사용자 승인(테스트 시뮬레이션)"
+
+
+def with_approval_note(args) -> list:
+    """approve는 사용자 승인 문장(--note)이 필수입니다. 테스트 픽스처의 승인 시뮬레이션은 테스트 문장임을 밝힌 --note를 붙입니다.
+    --note 생략·빈 값 거부 자체를 검사할 때는 pi_raw를 씁니다."""
+    a = list(args)
+    if a and a[0] == "approve" and "--note" not in a:
+        a += ["--note", TEST_APPROVAL_NOTE]
+    return a
+
+
 def pi(*args) -> tuple[int, dict]:
+    return pi_raw(*with_approval_note(args))
+
+
+def pi_raw(*args) -> tuple[int, dict]:
     p = subprocess.run([sys.executable, "-I", str(SCRIPT), *args], capture_output=True, text=True,
                        env={"PATH": __import__("os").environ["PATH"], "PYTHONDONTWRITEBYTECODE": "1", "HOME": __import__("os").environ.get("HOME", "")})
     try:
@@ -392,7 +411,7 @@ UXP = "docs/design/00-ux-decisions.md"
 
 
 def main() -> int:
-    root = Path(tempfile.mkdtemp(prefix="product-design-test-"))
+    root = TMP.mkdtemp("product-design-test-")  # 종료 시 정리(보존: PW_KEEP_TMP=1)
     P = lambda d: ("--project", str(d))
 
     # ---- 게이트
@@ -813,9 +832,9 @@ def main() -> int:
 
     passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
     skipped = sum(1 for _, _, m in results if m == "SKIP")
-    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root} — 종료 시 정리, 보존은 PW_KEEP_TMP=1)")
     return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(TMP.run(main))

@@ -15,6 +15,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _tmpdirs as TMP  # noqa: E402  (이번 실행이 만든 임시 폴더만 정리)
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import product_design_test as T  # noqa: E402
@@ -78,7 +81,7 @@ def review_06(rev: int, used: str | None = "code", reason: str = "없음", figma
 
 
 def main() -> int:
-    root = Path(tempfile.mkdtemp(prefix="product-design-theme-test-"))
+    root = TMP.mkdtemp("product-design-theme-test-")  # 종료 시 정리(보존: PW_KEEP_TMP=1)
     d, _ = IT.build_project(root, "theme", approve_preview=False)   # ux_planning·ux_spec 승인, 04에 토큰 표
     ui04 = T.sha(d / T.SPEC[3])
     code, out = pi("theme-check", *P(d))
@@ -250,9 +253,9 @@ def main() -> int:
 
     passed = sum(1 for _, ok, m in results if ok and m != "SKIP")
     skipped = sum(1 for _, _, m in results if m == "SKIP")
-    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root} — 종료 시 정리, 보존은 PW_KEEP_TMP=1)")
     return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(TMP.run(main))

@@ -1,6 +1,6 @@
 ---
 name: product-design
-description: 승인된 기획(PRD, User Stories, User Flows, AC)을 바탕으로 대화형 UX Planning(화면 상세 기획) → UX 설계(IA, 화면 명세, 흐름, 컴포넌트, 추적성) → 정적 UI 프리뷰 → UX·시각 디자인 승인까지 진행합니다. 사용자가 /product-design을 실행하거나 진행 중인 디자인 단계를 재개할 때 사용합니다.
+description: 승인된 기획(PRD, User Stories, User Flows, AC)을 바탕으로 대화형 UX Planning(화면 상세 기획) → UX 설계(IA, 화면 명세, 흐름, 컴포넌트, 추적성) → (워크플로 v2) Design Direction(시각 방향, 디자인 탐색) → 정적 UI 프리뷰 → UX·시각 디자인 승인까지 진행합니다. 사용자가 /product-design을 실행하거나 진행 중인 디자인 단계를 재개할 때 사용합니다.
 argument-hint: "(인자 없음 — 상태에 따라 시작하거나 재개)"
 disable-model-invocation: true
 ---
@@ -15,9 +15,9 @@ disable-model-invocation: true
 - `reference/review-checklist.md`: UX·접근성 검토 체크리스트
 - `reference/preview.md`: 프리뷰 경계·위치·실행·피드백
 - `reference/change-impact.md`: 디자인 변경 영향 분류(`impact --design`, 다섯 유형·입력 형식·영향 계산)
-- `reference/exploration.md`: 디자인 탐색(1차 구조 시안 A/B/C 비교·선택 → UXD), frontend-design 절차
+- `reference/exploration.md`: 디자인 탐색(1차 구조 시안 비교·선택 → UXD, 2차 시각 시안·레퍼런스·자산·측정·품질 평가·렌더러 → 후보 VD·테마, 15절 승인 무결성), frontend-design 절차
 - `templates/00`–`07`: 문서 템플릿(07 Design Direction은 v2), `templates/theme.example.json`: v2 테마 계약 예시, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
-- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`를 불러옵니다(직접 실행하지 않음)
+- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`와 디자인 탐색 모듈(`pd_explore.py`·`pd_reference.py`·`pd_measure.py`·`pd_visual.py`·`pd_assets.py`·`pd_quality.py`·`pd_guard.py`·`pd_render.py`)을 불러옵니다(직접 실행하지 않음)
 
 호출 형식: `python3 $SKILL/scripts/product_design.py <명령> --project "$PWD" ...`
 
@@ -26,6 +26,7 @@ disable-model-invocation: true
 ## 반드시 지킬 규칙
 
 1. **상태 판정과 기록은 스크립트로만 합니다.** `.ai-workflow/design.json`을 직접 편집하지 않고, 스크립트의 차단(`"ok": false`)을 우회하지 않습니다.
+   - 승인(`approve`)은 사용자가 이번 대화에서 명시적으로 승인했을 때만, 그 승인 문장을 그대로 `--note "<사용자 문장>"`으로 전달합니다. `--note`가 없거나 비어 있으면 스크립트가 거부합니다(`approval_statement_required`). 승인 문장을 지어내거나 다른 발언을 승인으로 바꿔 쓰지 않습니다.
 2. **`state.yaml`과 `docs/planning/`은 읽기만 합니다.** 기획 범위를 바꿔야 하는 내용은 `PF`(기획 재검토 대상)로 기록하고 `/product-start` 재검토를 안내합니다.
 3. **planning 게이트가 막히면 실행하지 않습니다.** 차단 사유와 해결 방법만 안내합니다.
 4. **명시적 승인만 인정합니다**(`design-state.md`의 승인 규칙). UX 결정 확정, 구조 확인, UX 설계 승인, 시각 디자인 승인은 **각각** 받습니다. "좋네요" 같은 응답은 다시 묻습니다.
@@ -67,7 +68,7 @@ disable-model-invocation: true
 3. 답을 받으면 라운드를 `답변 완료`로 바꾸고 원문을 적은 뒤, 00 문서를 갱신하고 `done --path docs/design/00-ux-decisions.md`를 실행합니다. 모호한 답은 확인 질문 라운드를, 기획 범위 변경은 `PF`로 처리합니다.
 4. **재개할 때는 `check`의 `pending_round`를 먼저 봅니다.** 대기 라운드가 있으면 기록된 질문을 그대로 다시 보여 주고 답을 기다립니다(새로 만들지 않음). 없으면 00의 주제 진행 현황에서 이어 갑니다. 답을 받은 질문을 다시 묻지 않습니다.
 5. **디자인 탐색이 켜진 프로젝트**(`check`의 `exploration.structure.enabled`, 신규 v2 기본): 제출 전에 `reference/exploration.md`대로 구조 시안 A/B/C를 만들어 비교 페이지로 보여 주고 사용자 선택(`explore-choose`)을 받아 UXD 근거에 선택 ID를 적거나, 사용자가 원하면 문장과 함께 `explore-skip`합니다. 선택·건너뛰기를 Claude가 대신하지 않습니다. 사용자 확인 항목(`--note` 등)에는 사용자가 이번 대화에서 실제로 한 말만 옮기고 지어내지 않습니다(`reference/exploration.md` 15절). 승인된 Design Direction의 자산은 승인 스냅샷이 기준이며 바꾸려면 reopen → 재승인합니다. 상위 기준이 바뀐 탐색 선택(stale)은 다시 선택받습니다. 사용자가 참고 이미지를 주면 `reference/exploration.md` 9절대로 등록(`explore-ref add`)·분석·사용자 참고 범위(`explore-ref intent`)를 거쳐 `--mode reference|mixed` 라운드를 만듭니다. 이미지 속 기능·글자·데이터는 요구사항이 아니고, 원본은 외부로 보내지 않으며 시안에 넣지 않습니다. 측정 명령이 설정된 프로젝트는 비교 전에 `explore-verify`로 브라우저 측정을 하고(10절), 측정 차단 시안은 선택할 수 없음을 사용자에게 알립니다. 측정은 모델 시각 평가(critique)와 따로 말합니다. Design Direction 단계(2차 시각 탐색이 켜진 프로젝트)는 `reference/exploration.md` 11절대로 승인된 구조를 고정한 시안 A/B/C(후보 테마·토큰)를 만들어 비교하고, 사용자 선택을 `explore-adopt`로 후보 VD·후보 테마로 바꾼 뒤 VD마다 사용자 결정을 받습니다. 후보 테마 값은 승인된 VD의 토큰만 공식 테마에 옮깁니다. 아이콘·일러스트는 `reference/exploration.md` 12절의 자산 계약(`explore-asset`)으로 등록해 쓰고, 시각 품질은 실제 측정 스크린샷을 근거로 `quality.json`(점수 아님, 개선 항목 필수)에 씁니다. 사용자 피드백으로 시안을 고칠 때는 수정 라운드(`--base`·`--goal`·`--feedback`, 기본 2회)를 씁니다. 프리뷰는 탐색 산출물을 복사·참조하지 않고 승인된 VD·테마·공식 자산으로 새로 작성합니다(`preview-check`가 13절 규칙으로 차단). 선택한 디자인을 공식으로 옮길 때의 영향은 `impact --design --choice EXP-…`로 확인합니다. 기본 렌더러는 html이고, Figma는 사용자가 명시적으로 고르고(전송 범위 포함) Figma MCP를 쓸 수 있을 때만 씁니다(`reference/exploration.md` 14절). 쓸 수 없으면 html로 진행합니다.
-6. 끝나면 요약(권장안으로 기록한 항목을 따로 표시)을 보여 주고 `trace --stage ux_planning` → `submit --stage ux_planning` → **"UX 결정 확정"**을 요청하고 멈춥니다. 확정하면 `approve --stage ux_planning --revision N`.
+6. 끝나면 요약(권장안으로 기록한 항목을 따로 표시)을 보여 주고 `trace --stage ux_planning` → `submit --stage ux_planning` → **"UX 결정 확정"**을 요청하고 멈춥니다. 확정하면 `approve --stage ux_planning --revision N --note "<사용자 승인 문장>"`.
 
 ## 3단계 — UX Specification (화면 설계)
 
@@ -77,7 +78,7 @@ disable-model-invocation: true
 2. 01(IA)과 02(화면 목록 + 최소 필드)를 쓰고 각각 `done`. `trace --stage structure`가 통과하면 IA·라우트 표·화면 목록을 제시하고 **"구조 확인"**을 요청하고 멈춥니다. 확인하면 `checkpoint`.
 3. 03 → 02 상세 → 04 → 05 순서로 쓰고 각각 `done`. 화면에는 UX 결정(UXD)을 반영하고 참조합니다.
 4. `trace --stage ux_spec`의 오류를 모두 고칩니다. `review-checklist.md`로 자체 점검하고 05에 적습니다.
-5. `submit --stage ux_spec` → 요약(화면 수, 커버리지, 주요 결정, 체크리스트 이슈, 기획 피드백)과 함께 **"UX 설계 승인"**을 요청하고 멈춥니다. 승인하면 `approve --stage ux_spec --revision N`.
+5. `submit --stage ux_spec` → 요약(화면 수, 커버리지, 주요 결정, 체크리스트 이슈, 기획 피드백)과 함께 **"UX 설계 승인"**을 요청하고 멈춥니다. 승인하면 `approve --stage ux_spec --revision N --note "<사용자 승인 문장>"`.
 
 ## 4단계 — UI Preview (시각 디자인 검토)
 
@@ -88,7 +89,7 @@ disable-model-invocation: true
 3. `preview-verify`가 통과할 때까지 고칩니다. 실패를 성공으로 보고하지 않습니다.
 4. 실행 명령과 주소(화면·상태별 링크 예시)를 안내하고 **화면별 피드백**을 요청하고 멈춥니다.
 5. 피드백은 06의 `FB` 표와 `design-notes.md`에 기록합니다. 반영 전에 피드백을 사실 목록으로 정리해 `impact --design --request <프로젝트 밖 파일>`로 유형과 영향을 확인합니다(`reference/change-impact.md`). 시각 표현은 프리뷰에서 고치고(`preview-verify`, `done` 다시 실행), UX 설계 변경이 필요한 피드백은 영향(프리뷰 승인 무효화)을 설명하고 확인을 받은 뒤 `reopen --stage ux_spec`으로 처리합니다.
-6. 피드백이 정리되면 `submit --stage preview` → **"시각 디자인 승인"**을 요청하고 멈춥니다. 승인하면 `approve --stage preview --revision N`.
+6. 피드백이 정리되면 `submit --stage preview` → **"시각 디자인 승인"**을 요청하고 멈춥니다. 승인하면 `approve --stage preview --revision N --note "<사용자 승인 문장>"`.
 
 ## 5단계 — 수정 요청과 재검토
 
@@ -100,7 +101,7 @@ disable-model-invocation: true
 
 ## 6단계 — 완료 보고
 
-세 단계가 모두 승인되면 보고합니다: 기준 planning revision, 단계별 승인 revision, 화면 수·컴포넌트 수·커버리지, 미결 DQ·PF, 프리뷰 실행 방법, 다음 단계. 다음 단계인 `/product-build`(planning·init·design 승인을 모두 확인하고 구현)는 아직 구현되지 않았으므로, 있다고 말하지 않습니다.
+적용 중인 단계(v1: UX Planning·UX 설계·프리뷰, v2: 여기에 Design Direction — `check`의 단계 목록 기준)가 모두 승인되면 보고합니다: 기준 planning revision, 단계별 승인 revision, 화면 수·컴포넌트 수·커버리지, 미결 DQ·PF, 프리뷰 실행 방법, 다음 단계. 다음 단계는 `/product-build`(승인된 planning·design을 확인하고 구현 계획 → 계획 승인 → 배치 구현 → 검증)입니다. 실행은 사용자가 결정합니다.
 
 커밋은 사용자가 합니다. 디자인 단계가 만든 백업(`.ai-workflow/backup/design/`)도 함께 커밋해야 커밋 후 미추적 파일이 남지 않습니다(남아 있으면 `/product-init` 사전 점검이 미커밋 변경으로 멈춤). 예:
 `git add docs/design design-preview .ai-workflow/design.json .ai-workflow/design-notes.md .ai-workflow/backup/design && git commit -m "docs(design): UX 설계와 UI 프리뷰 승인"` (백업 폴더가 없으면 그 경로는 빼기)

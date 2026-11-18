@@ -15,6 +15,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _tmpdirs as TMP  # noqa: E402  (이번 실행이 만든 임시 폴더만 정리)
+
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import product_design_test as T  # noqa: E402
@@ -117,7 +120,7 @@ def approved_v2_project(root: Path, name: str, approve_spec: bool = True) -> Pat
 
 
 def main() -> int:
-    root = Path(tempfile.mkdtemp(prefix="product-design-dd-test-"))
+    root = TMP.mkdtemp("product-design-dd-test-")  # 종료 시 정리(보존: PW_KEEP_TMP=1)
 
     # ---------------------------------------------------------------- 의미 해시 sem-2(형식별 안전성)
     N = PD.sem_normalize
@@ -319,9 +322,9 @@ def main() -> int:
 
     passed = sum(1 for _, ok_, m in results if ok_ and m != "SKIP")
     skipped = sum(1 for _, _, m in results if m == "SKIP")
-    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root})")
+    print(f"\nRESULT {passed}/{len(results)} passed, {skipped} skipped  (임시 디렉터리: {root} — 종료 시 정리, 보존은 PW_KEEP_TMP=1)")
     return 0 if passed + skipped == len(results) else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(TMP.run(main))

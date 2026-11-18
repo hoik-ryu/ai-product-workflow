@@ -50,7 +50,10 @@ def pb(d, *args):
 
 
 def pd(d, *args):
-    return run(PD, *args, "--project", str(d))
+    a = list(args)
+    if a and a[0] == "approve" and "--note" not in a:  # product_design approve는 사용자 승인 문장 필수(테스트 시뮬레이션 문장)
+        a += ["--note", "사용자 승인(테스트 시뮬레이션)"]
+    return run(PD, *a, "--project", str(d))
 
 
 def G(d, *args):

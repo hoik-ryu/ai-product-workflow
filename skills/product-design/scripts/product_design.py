@@ -362,6 +362,10 @@ def _dd_assets_or_block(project: Path, st: dict) -> dict:
 
 def cmd_approve(a) -> None:
     project = Path(a.project).resolve()
+    note = (a.note or "").strip()
+    if not note:  # 사용자 승인 기록을 엔진이 지어내지 않습니다(상태를 읽거나 쓰기 전에 거부).
+        block("approval_statement_required", "승인은 사용자의 명시적 승인 문장이 필요합니다. 사용자가 이번 대화에서 한 승인 문장을 그대로 "
+              "--note \"<사용자 문장>\"으로 전달하세요. 문장이 없으면 승인하지 않습니다.")
     st = require_state(project)
     require_stage_usable(st, a.stage)
     require_valid(project, st, a.stage)
@@ -419,7 +423,7 @@ def cmd_approve(a) -> None:
     xb = EX.exploration_basis(st, stage)
     if xb is not None:  # 탐색 선택 근거(추적만, 승인 판정·해시에 쓰지 않음)
         s["exploration_basis"] = xb
-    add_history(st, stage, "approved", s["revision"], a.note or "사용자 명시적 승인")
+    add_history(st, stage, "approved", s["revision"], note)
     if workflow_of(st) == "v1":
         nxt = NEXT_STAGE.get(stage)
         if nxt and st["stages"][nxt]["status"] == "locked":
@@ -870,7 +874,7 @@ def main() -> None:
     s = add("checkpoint", cmd_checkpoint); s.add_argument("--note", default="")
     s = add("submit", cmd_submit); s.add_argument("--stage", required=True, choices=ALL_STAGES)
     s = add("approve", cmd_approve); s.add_argument("--stage", required=True, choices=ALL_STAGES)
-    s.add_argument("--revision", required=True, type=int); s.add_argument("--note", default="")
+    s.add_argument("--revision", required=True, type=int); s.add_argument("--note", default="", help="사용자 승인 문장(필수, 비어 있으면 거부)")
     s = add("reopen", cmd_reopen); s.add_argument("--stage", required=True, choices=ALL_STAGES); s.add_argument("--reason", required=True)
     s = add("impact", cmd_impact); s.add_argument("--design", action="store_true")
     s.add_argument("--request"); s.add_argument("--base"); s.add_argument("--choice")

@@ -9,7 +9,7 @@
 |---|---|
 | `discovery` | `in_progress` → `awaiting_approval` → `approved` |
 | `planning` | `locked` → `not_started` → `in_progress` → `awaiting_approval` → `approved`, 그리고 `outdated` |
-| `design` | `locked` → `not_started` (Milestone 1은 잠금 해제만 하고 실행하지 않음) |
+| `design` | `locked` → `not_started` (/product-start는 planning 승인 시 잠금 해제만 합니다. 디자인 진행 상태는 `/product-design`의 `.ai-workflow/design.json`이 관리하며, `/product-design`은 `state.yaml`의 design 값을 바꾸지 않습니다. T7·T9 재검토 때는 `locked`로 되돌아갑니다) |
 
 상태의 의미:
 
@@ -31,7 +31,7 @@
 | T5 | planning `not_started`/`outdated` | 사용자가 생성 확인 | planning `in_progress` | 02 → 05 순서로 생성. 파일 하나가 끝날 때마다 즉시 `artifacts_done`에 추가 |
 | T6 | planning `in_progress` | 파일 4개 완료 + 추적성 점검 | planning `awaiting_approval` | `ps_state.py submit --stage planning --revision N+1 --confirm`으로만 기록: discovery 기준·revision(정확히 +1)·front matter 검증, `revision += 1`, `artifacts_done` 비움, 제출 스냅샷 `submitted.{revision, at, hashes}`(전체 SHA-256) 기록(이전 스냅샷은 덮어씀), history `submitted`. 승인 해시는 쓰지 않음. design `locked` 유지 |
 | T7 | discovery `approved` | 사용자가 discovery 변경을 원함 | discovery `in_progress` | discovery `approved` 초기화. planning이 `locked`/`not_started`가 아니면 `outdated`로 바꾸고 planning `approved`도 초기화. design은 `locked`로 되돌림 |
-| T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`으로 거부, 스냅샷 없으면 `submission_snapshot_missing`). 승인 기록(approved.hashes = 스냅샷), 스냅샷 비움. design `locked` → `not_started`. `current_stage: design`. Milestone 1 완료 |
+| T8 | planning `awaiting_approval` | 명시적 승인 | planning `approved` | 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`으로 거부, 스냅샷 없으면 `submission_snapshot_missing`). 승인 기록(approved.hashes = 스냅샷), 스냅샷 비움. design `locked` → `not_started`. `current_stage: design`. Planning 단계 완료(다음은 `/product-design`) |
 | T9 | planning `approved` | 사용자가 planning 변경을 원함(명시적 확인) | planning `in_progress` | `ps_state.py reopen --stage planning --revision N --confirm`으로만 기록: 승인 기록 검증, planning `approved` 초기화(이전 승인 시각·해시는 history `reopened`에 보존, 해시 재계산 없음), design `locked`, `current_stage: planning`. revision은 유지(다음 제출에서 +1) |
 
 규칙:
