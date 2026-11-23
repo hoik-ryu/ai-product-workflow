@@ -38,6 +38,7 @@ import pb_ui as U  # noqa: E402
 import pb_uiev as UV  # noqa: E402
 import pb_uireview as UR  # noqa: E402
 import pb_uiguard as UG  # noqa: E402
+import pb_temp as TP  # noqa: E402  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
 from pb_exec import (  # noqa: E402
     DEP_LEVELS, EVIDENCE_REL, LOCK_REL, acquire_lock, changed_vs, classify, diff_states, ensure_gitignore, head_sha, heartbeat,
     in_patterns, load_checkpoint, lock_age_minutes, next_task, read_lock, release_lock, require_lock, save_base_tests, states_now, task_order,
@@ -2405,6 +2406,14 @@ def cmd_ui_feedback(a) -> None:
     block("invalid_arguments", f"알 수 없는 동작: {a.action}")
 
 
+def cmd_temp_dir(a) -> None:
+    """TEMP 산출물 실행 폴더(저장소 밖). build.json·증거 경로는 읽지도 쓰지도 않습니다(docs/policies/artifact-retention.md)."""
+    try:
+        emit(TP.cli(Path(a.project), a.purpose, a.keep, a.note, a.location, a.mark_keep))
+    except TP.TempPathError as e:
+        block(e.code, e.message)
+
+
 def cmd_ui_guard(a) -> None:
     """일상 개발(T0~T2)의 읽기 전용 UI 경량 검사. 배치·계획·커밋 없이 실행하고 아무것도 쓰지 않습니다(reference/ui.md §9)."""
     os.environ["GIT_OPTIONAL_LOCKS"] = "0"  # git status·diff가 index를 갱신하지 않도록(하위 프로세스에도 적용)
@@ -2515,6 +2524,9 @@ def main() -> None:
     s.add_argument("--id"); s.add_argument("--route"); s.add_argument("--withdraw", action="store_true"); s.add_argument("--reason", default="")
     s = add("ui-guard", cmd_ui_guard); s.add_argument("--base"); s.add_argument("--path", action="append"); s.add_argument("--all", action="store_true")
     s.add_argument("--strict", action="store_true")
+    s = add("temp-dir", cmd_temp_dir)
+    s.add_argument("--purpose"); s.add_argument("--keep", action="store_true"); s.add_argument("--note", default="")
+    s.add_argument("--location", choices=("auto", "outside", "repo"), default="auto"); s.add_argument("--mark-keep")
     a = ap.parse_args()
     try:
         a.fn(a)

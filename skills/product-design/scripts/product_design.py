@@ -30,6 +30,7 @@ LLM은 인터뷰, 문서 작성, 프리뷰 화면 작성만 맡습니다. 게이
              explore-tokens·adopt·impact(2차: 후보 테마 토큰 CSS·후보 VD/테마 채택·후보 변경 영향, pd_visual.py),
              explore-asset add·replace·confirm·style·list·check·sync(시각 자산 계약, pd_assets.py), explore-quality(시각 품질 평가 계약, pd_quality.py), explore-renderer status·enable·disable·allow-transfer(렌더러 계약, pd_render.py),
              explore-ref add·list·privacy·extract-check·confirm·intent·candidates·policy·withdraw·track(레퍼런스 기반 탐색, pd_reference.py)
+  temp-dir   일회성 캡처·측정·로그용 실행 폴더(저장소 밖, --purpose [--keep --note] | --mark-keep <폴더> --note, pd_temp.py). 상태 불변
 
 모든 출력은 JSON이며, 차단·실패 시 종료 코드 2를 반환합니다.
 """
@@ -61,6 +62,7 @@ import pd_assets as PA  # noqa: E402  (EX5.1 시각 자산 계약)
 import pd_quality as QL  # noqa: E402  (EX5.1 시각 품질 평가 계약)
 import pd_render as RDR  # noqa: E402  (EX7 렌더러 공통 계약·Figma 선택 연동)
 import pd_reference as RF  # noqa: E402  (레퍼런스 기반 탐색 EX3: §2.12)
+import pd_temp as TP  # noqa: E402  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
 
 
 def annotate_problems(project: Path, st: dict, cv: dict) -> None:
@@ -851,6 +853,14 @@ def cmd_status(a) -> None:
           **({"exploration": EX.exploration_summary(st)} if EX.exploration_summary(st) is not None else {})})
 
 
+def cmd_temp_dir(a) -> None:
+    """TEMP 산출물 실행 폴더(저장소 밖). 상태·승인 파일은 읽지도 쓰지도 않습니다(docs/policies/artifact-retention.md)."""
+    try:
+        emit(TP.cli(Path(a.project), a.purpose, a.keep, a.note, a.location, a.mark_keep))
+    except TP.TempPathError as e:
+        block(e.code, e.message)
+
+
 class JsonArgParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:  # 인자 오류도 JSON으로
         block("invalid_arguments", message)
@@ -929,6 +939,9 @@ def main() -> None:
     s.add_argument("--ref"); s.add_argument("--by"); s.add_argument("--result"); s.add_argument("--items"); s.add_argument("--decision")
     s.add_argument("--use", action="append"); s.add_argument("--only", default=""); s.add_argument("--note", default="")
     s.add_argument("--limit", action="append")
+    s = add("temp-dir", cmd_temp_dir)
+    s.add_argument("--purpose"); s.add_argument("--keep", action="store_true"); s.add_argument("--note", default="")
+    s.add_argument("--location", choices=("auto", "outside", "repo"), default="auto"); s.add_argument("--mark-keep")
     a = ap.parse_args()
     try:
         a.fn(a)

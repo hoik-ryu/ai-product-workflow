@@ -1,0 +1,25 @@
+# >>> ai-product-workflow recommended v1 >>>
+# 프로젝트 .gitignore 끝에 이 블록을 그대로 덧붙입니다(기존 규칙은 고치지 않음). 시작·끝 표식이 이미 있으면 다시 넣지 않습니다.
+# 정책: docs/policies/artifact-retention.md (엔진 저장소)
+# - 이미 추적 중인 파일에는 영향이 없습니다(추적 해제하지 않음).
+# - 이미지·JSON 확장자 전체를 무시하지 않습니다. 제품 자산·승인 근거·승인된 Preview는 계속 추적합니다.
+# - 엔진 TEMP 기본 경로는 저장소 밖입니다(temp-dir). 아래 규칙은 저장소 안에 생기는 임시 결과만 제외합니다.
+# - 엔진이 관리하는 제외 규칙은 각 폴더의 .gitignore에 따로 있습니다: design-explore/.gitignore(shots·compare·미선택 시안),
+#   .ai-workflow/build/.gitignore(evidence·runs·로그), .ai-workflow/tmp/.gitignore(TEMP 폴백), design-preview/.gitignore(빌드 결과).
+
+# 엔진 TEMP 폴백 경로(저장소 밖에 쓸 수 없을 때. 폴더 자체 .gitignore와 중복이지만 폴더가 지워져도 유지)
+.ai-workflow/tmp/
+
+# E2E·브라우저 테스트 도구의 실행별 출력(실패 캡처·trace·HTML 리포트). 시각 회귀 기준 스냅샷(*-snapshots/)은 추적합니다.
+test-results/
+playwright-report/
+blob-report/
+/playwright/.cache/
+
+# 패키지 관리자 디버그 로그. *.log 전체는 무시하지 않습니다: 수동 증거(evidence-manual)로 등록한 로그는
+# 경로·해시로 기록되므로 Git에서 빠지면 다른 환경에서 증거가 stale이 됩니다. 실행 로그는 저장소 밖 TEMP에 씁니다.
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# <<< ai-product-workflow recommended v1 <<<

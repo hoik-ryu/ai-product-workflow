@@ -36,6 +36,7 @@ disable-model-invocation: true
 8. 프리뷰는 `design-preview/`에만 만들고 `frontend/`를 수정하거나 import하지 않습니다. 실제 API·인증·비즈니스 로직을 만들지 않습니다. 디자인 탐색 시안은 `design-explore/`에만 만들고, 승인 대상이 아니므로 프리뷰·제품 코드로 복사하거나 참조하지 않습니다.
 9. Git commit, push, reset, checkout, clean, stash를 실행하지 않습니다. 비밀값과 `.env`를 읽거나 만들지 않습니다.
 10. 사용자와의 대화와 산출물은 한국어로 씁니다. ID, 파일명, 상태값은 영어로 유지합니다.
+11. **엔진 명령이 아닌 일회성 결과는 저장소 밖에 씁니다.** 검토용 캡처, 프레임·보드, 임시 측정 JSON, 로그, 중간 렌더가 해당합니다. 먼저 `temp-dir --purpose <용도>`(예: `preview-review`, `explore-review`, `debug`)로 실행 폴더를 받아 그 경로에 씁니다. `design-preview/`(트리 해시가 바뀜)·`design-explore/`(오염 검사 색인)·`docs/` 안에 `review/` 같은 임의 폴더를 만들지 않습니다. 승인 근거로 남길 캡처만 엔진 명령으로 등록합니다. `explore-choose --evidence`는 저장소 밖 파일을 거부하므로, 증거 후보는 `temp-dir --location repo`로 받은 폴더(`.ai-workflow/tmp/`, Git 제외)에 두거나 그곳으로 복사해 등록합니다. 엔진이 `selection/evidence/`로 복사·해시합니다. 오류 재현 자료는 `temp-dir --mark-keep <폴더> --note "<이유>"`로 보관 표시합니다. TEMP 파일은 지우지 않습니다. 분류·보관 기준은 엔진 저장소 `docs/policies/artifact-retention.md`입니다.
 
 ## 0단계 — 사전 점검(매 실행)
 

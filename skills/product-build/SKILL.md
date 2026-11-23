@@ -43,6 +43,7 @@ disable-model-invocation: true
 9. Docker 등 특정 실행 환경을 전제하지 않습니다. 검증 명령과 필요한 환경은 프로필에 적습니다. 실행할 수 없는 단계는 `not_run`이며 통과로 말하지 않습니다.
 10. 대화와 산출물은 한국어로 씁니다. ID, 파일명, 상태값은 영어로 유지합니다.
 11. **코드는 배치의 `paths.allow`·`paths.shared` 안에서만 씁니다.** 다른 Skill의 상태·승인 문서·`design-preview/`·`.env`를 고치지 않습니다. 기존 테스트를 지우거나 약하게 만들어 통과시키지 않습니다.
+12. **검증 명령 밖의 일회성 결과는 저장소 밖에 씁니다.** 수동 브라우저 캡처, 디버깅 로그, 임시 측정이 해당합니다. `temp-dir --purpose <용도>`(예: `e2e`, `visual`, `debug`)로 실행 폴더를 받아 씁니다. 프로필 검증 단계의 리포트는 지금처럼 `PB_REPORT_DIR`(`.ai-workflow/build/evidence/`, Git 제외)에 씁니다. 저장소 안에 임의 캡처·로그 폴더를 만들지 않습니다. 수동 증거(`evidence-manual add --file`)는 복사 없이 그 경로·해시로 기록됩니다. 그래서 남길 파일만 골라 Git이 추적하는 저장소 안 위치로 복사한 뒤 등록합니다. `.ai-workflow/tmp/`나 `.gitignore`로 제외된 경로는 쓰지 않으며, `git check-ignore -v <파일>`로 먼저 확인합니다. 오류 재현 자료는 `temp-dir --mark-keep <폴더> --note "<이유>"`로 보관 표시하고, TEMP 파일은 지우지 않습니다. 기준은 엔진 저장소 `docs/policies/artifact-retention.md`입니다.
 
 ## 0단계 — 사전 점검(매 실행)
 

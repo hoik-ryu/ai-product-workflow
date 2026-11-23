@@ -40,6 +40,8 @@ skills/product-build/
   scripts/pb_core.py · pb_inputs.py · pb_scan.py · pb_plan.py · pb_adopt.py · pb_exec.py · pb_verify.py · pb_ledger.py  상태·기준선 · 입력 모델 · 스택·코드 탐지 · 계획 검증·렌더링 · adopt 분석 · 배치 실행(잠금·체크포인트·범위) · AC 검증(리포트·증거 수준) · 정책·편차 원장
   templates/               build-profile.toml, implementation-plan.example.json
 docs/architecture.md       설계
+docs/policies/artifact-retention.md  산출물 분류(PRODUCT·APPROVAL·TEMP)·TEMP 경로(temp-dir)·정리 정책
+docs/policies/gitignore.recommended  제품 저장소 .gitignore에 덧붙이는 권장 블록(덮어쓰기 없음)
 tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
 tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
 tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
