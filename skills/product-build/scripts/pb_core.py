@@ -278,7 +278,8 @@ def design_info(project: Path) -> dict:
     raw = read_design_state(project)
     stages = ds["stages"]
     probs = (ds.get("cross_verify") or {}).get("problems", [])
-    bad = {p.get("stage") for p in probs}
+    # pending_change(진행 중 디자인 변경 요청)는 단계 승인을 깨지 않지만 영향 화면의 실행·승인을 막습니다(design_pending_hits).
+    bad = {p.get("stage") for p in probs if p.get("kind") != "pending_change"}
     wf = (ds.get("workflow") or {}).get("workflow") or ("v2" if (raw.get("config") or {}).get("workflow") == "v2" else "v1")
     gate = bool(((raw.get("config") or {}).get("gates") or {}).get("design_direction"))
 
@@ -305,7 +306,48 @@ def design_info(project: Path) -> dict:
     }
     info["approved_digests"] = {st: digest(rec.get("hashes")) for st in ("ux_planning", "ux_spec", "design_direction", "preview")
                                 if (rec := _approved_record(raw, st))}
+    ch = ds.get("changes") or {}
+    info["changes"] = {"enabled": bool(ch.get("enabled")), "chain_ok": ch.get("chain_ok", True), "head": ch.get("head"),
+                       "amendments": [{"id": a["id"], "digest": a["digest"], "files": a.get("files") or {}, "screens": a.get("screens"), "cr": a.get("cr")}
+                                      for a in ch.get("amendments") or []]}
+    pend = {x["cr"]: {"cr": x["cr"], "screens": x.get("screens"), "files": x.get("files") or []} for x in ch.get("pending") or []}
+    for p in probs:
+        if p.get("kind") == "pending_change":
+            pend.setdefault(p.get("cr") or "?", {"cr": p.get("cr"), "screens": p.get("screens"), "files": []})["files"] = sorted(
+                set(pend.get(p.get("cr") or "?", {}).get("files") or []) | set(p.get("paths") or []) | set(p.get("outside_scope") or []))
+    info["pending"] = list(pend.values())
     return info
+
+
+def design_pending_hits(dinfo: dict, plan_batch: dict | None, requires_design: bool) -> list[dict]:
+    """진행 중 디자인 변경 요청 중 이 배치의 화면에 영향을 주는 것. 화면 배치가 아니면 영향 없음.
+    변경 요청 범위(화면)를 알 수 없거나 배치 화면 목록이 없으면 보수적으로 영향 있음."""
+    pend = dinfo.get("pending") or []
+    if not pend or not requires_design:
+        return []
+    screens = set((plan_batch or {}).get("screens") or [])
+    return [p for p in pend if p.get("screens") is None or not screens or set(p["screens"]) & screens]
+
+
+def design_chain_raw(project: Path) -> list[dict]:
+    """재검증 표시(stale)용 승인 패치 목록(읽기만). 패치를 '인정'하는 판단은 product-design status(유효 기준)를 따르고,
+    이 목록은 배치를 다시 검증하게 만드는 데만 씁니다(보수적 방향)."""
+    ch = (read_design_state(project).get("changes") or {})
+    return [a for a in (ch.get("chain") or []) if isinstance(a, dict)]
+
+
+def amendment_stale_reason(project: Path, b: dict, plan_batch: dict | None) -> str | None:
+    """배치 검증 이후 승인된 디자인 패치가 이 배치 화면에 영향을 주면 재검증 사유. 화면 배치만 대상."""
+    if not b.get("requires_design"):
+        return None
+    chain = design_chain_raw(project)
+    seen = int((b.get("verification") or {}).get("design_amendments") or 0)
+    screens = set((plan_batch or {}).get("screens") or [])
+    hits = [a for a in chain[seen:] if a.get("screens") is None or not screens or set(a["screens"]) & screens]
+    if not hits:
+        return None
+    return (f"검증 이후 승인된 디자인 패치 {', '.join(a['id'] + '(' + str(a.get('cr')) + ')' for a in hits)}가 이 배치 화면"
+            f"({', '.join(sorted(screens)) or '알 수 없음'})에 영향을 줍니다 — 재검증 필요(계획은 유효)")
 
 
 def planning_gate(project: Path) -> dict:
@@ -330,7 +372,10 @@ def input_baseline(project: Path, gate: dict, dinfo: dict) -> dict:
         "planning": {"discovery_revision": gate.get("discovery_approved_revision"), "planning_revision": gate.get("planning_approved_revision"),
                      "hashes": gate.get("planning_hashes", {})},
         "design": {"level": dinfo["level"], "workflow": dinfo.get("workflow"), "basis": dinfo.get("basis", {}),
-                   "approved_digests": dinfo.get("approved_digests", {})},
+                   "approved_digests": dinfo.get("approved_digests", {}),
+                   **({"amendments": (dinfo.get("changes") or {}).get("amendments") or [],
+                       "pending_files": sorted({f for p in dinfo.get("pending") or [] for f in p.get("files") or []})}
+                      if (dinfo.get("changes") or {}).get("enabled") or (dinfo.get("changes") or {}).get("amendments") else {})},
         "design_files": files,
     }
 
@@ -355,7 +400,26 @@ def baseline_changes(old: dict, new: dict) -> list[str]:
     rank = {"L0": 0, "L1": 1, "L2": 2, "L3": 3}
     if rank.get(nd.get("level"), 0) < rank.get(od.get("level"), 0):
         ch.append(f"design.level: {od.get('level')} → {nd.get('level')}")
+    oa = od.get("amendments") or []
+    na = nd.get("amendments") or []
+    if [(x["id"], x["digest"]) for x in oa] != [(x["id"], x["digest"]) for x in na[:len(oa)]]:
+        ch.append("design.amendments: 계획 기준 이후 승인 패치 체인이 달라졌습니다(삭제·교체 의심)")
+        na = []
+    newer = na[len(oa):]
+    pending = set(nd.get("pending_files") or [])
+
+    def explained(f: str, h_old, h_new) -> bool:
+        """계획 승인 이후 승인된 디자인 패치(Type B)로 설명되는 문서 변경인지(이전 해시 → 패치 체인 → 현재 해시)."""
+        h = h_old
+        for x in newer:
+            t = (x.get("files") or {}).get(f)
+            if t and t[0] == h:
+                h = t[1]
+        return h != h_old and h == h_new
     for f in sorted(set(old.get("design_files", {})) | set(new.get("design_files", {}))):
+        o_h, n_h = old.get("design_files", {}).get(f), new.get("design_files", {}).get(f)
+        if o_h != n_h and (explained(f, o_h, n_h) or f in pending):
+            continue  # 승인 패치로 설명됨(영향 배치만 재검증) / 진행 중 변경 요청(영향 배치 실행·승인 차단)
         if old.get("design_files", {}).get(f) != new.get("design_files", {}).get(f):
             ch.append(f"{f}: 내용 변경")
     return ch

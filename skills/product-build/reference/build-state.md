@@ -162,3 +162,15 @@ preview waiver는 **프리뷰 승인만** 대신하는 공식 예외 경로입�
 - 1: 내부 오류. 상태 파일은 원자적으로만 쓰므로 부분 기록이 없습니다.
 
 모든 출력은 JSON입니다.
+
+## 9. 디자인 변경 요청(CR)·승인 패치 연동(M1)
+
+/product-design `reference/change-request.md` §6. 이 Skill은 디자인 상태를 쓰지 않고 `product_design.py status`의 `changes`만 읽습니다.
+
+| 상황 | 이 Skill의 동작 |
+|---|---|
+| 계획 승인 이후 승인된 Type B 패치로 설명되는 디자인 문서 변경 | 계획 유효(outdated 아님). 입력 기준선에 패치 목록(`design.amendments`)을 기록 |
+| 승인된 패치의 영향 화면 ∩ 배치 화면(또는 패치 범위 불명) | 그 배치만 `stale`(재검증). 검증 기록에 `design_amendments`(그 시점 패치 수) |
+| 진행 중 CR의 영향 화면 ∩ 배치 화면(또는 범위 불명) | `batch-start`·`resume`·`execute-gate`·`verify`·`approve batch` 차단(`design_change_pending`). 계획은 유효, 영향 없는 배치는 진행 |
+| 패치 체인 문제 | 화면 배치 작업 차단(`design_amendment_chain_broken`) |
+| Type A(제품 코드 수정) | 기존 `guard --base`(보호 경로)·`verify`·`ledger` 그대로 |

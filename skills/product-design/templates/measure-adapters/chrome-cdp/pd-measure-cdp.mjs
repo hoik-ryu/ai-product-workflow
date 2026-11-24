@@ -184,6 +184,19 @@ function MEASURE(a) {
   if (!D.documentElement.getAttribute("lang")) a11y.serious++;
   const de = D.documentElement;
   const tmin = (a.checks && a.checks.touch_min_px) || 44;
+  // 이미지 사실(변경 요청 화면 검증용): 실제 픽셀 크기, 렌더 상자, object-fit, 조상 overflow에 의한 잘림. 판정은 엔진이 합니다.
+  const images = [...scope.querySelectorAll("img")].map((i) => {
+    const r = i.getBoundingClientRect(); const s = cs(i); let clippedBy = null;
+    for (let x = i.parentElement; x && x !== D.body && x !== scope.parentElement; x = x.parentElement) {
+      const xs = cs(x);
+      if (xs.overflow !== "visible" || xs.overflowX !== "visible" || xs.overflowY !== "visible") {
+        const xr = x.getBoundingClientRect();
+        if (r.left < xr.left - 1 || r.right > xr.right + 1 || r.top < xr.top - 1 || r.bottom > xr.bottom + 1) { clippedBy = label(x); break; }
+      }
+    }
+    return { src: (i.currentSrc || i.src || "").split("/").pop().split("?")[0].slice(0, 160), complete: i.complete,
+      natural: [i.naturalWidth, i.naturalHeight], box: [r.x + sx, r.y + sy, r.width, r.height], visible: visible(i), object_fit: s.objectFit, clipped_by: clippedBy };
+  });
   return {
     viewport_actual: { width: W.innerWidth, height: W.innerHeight, dpr: W.devicePixelRatio }, rendered,
     a11y, overflow: de.scrollWidth > de.clientWidth,
@@ -191,6 +204,7 @@ function MEASURE(a) {
     touch_target_violations: a.mobile ? touch.filter((t) => Math.min(t.w, t.h) < tmin).length : 0,
     layout: { scroll_width: de.scrollWidth, client_width: de.clientWidth, scroll_height: de.scrollHeight, viewport_height: W.innerHeight,
       elements, fixed, touch, components },
+    images,
   };
 }
 

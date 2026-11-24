@@ -119,7 +119,8 @@ def dd_asset_snapshot(project: Path, st: dict) -> tuple[dict, list[str]]:
         a = reg["assets"][aid]
         r = st["exploration"]["asset_rights"][aid]
         snap[aid] = {"file": a["file"], "sha256": a["sha256"], "entry_sha256": _entry_sha(a), "vds": sorted(uses[aid]),
-                     "rights": {"license": r["license"], "statement": r.get("statement"), "confirmed_at": r.get("at")}}
+                     "rights": {"license": r["license"], "statement": r.get("statement"), "confirmed_at": r.get("at"),
+                                **({"inherited_from": r["inherited_from"]} if r.get("inherited_from") else {})}}
     return snap, errs
 
 
@@ -138,8 +139,9 @@ def snapshot_drift(project: Path, st: dict, snap: dict) -> list[str]:
 
 
 def official_ok(a: dict) -> bool:
+    """권리 확인됨: 사용자 확인(confirmed_by_user) 또는 승인 자산 파생본의 권리 상속(inherited_from, change-request.md §3.3)."""
     r = a.get("rights") or {}
-    return bool(r.get("confirmed_by_user")) and str(r.get("license") or "").lower() not in UNCLEAR_LICENSES and a.get("source") != "reference_derived"
+    return (bool(r.get("confirmed_by_user")) or bool(r.get("inherited_from"))) and str(r.get("license") or "").lower() not in UNCLEAR_LICENSES and a.get("source") != "reference_derived"
 
 
 # ---------------------------------------------------------------- SVG 안전·스타일
@@ -206,6 +208,30 @@ def asset_problems(project: Path, st: dict, reg: dict, aid: str) -> tuple[list[s
 
 
 # ---------------------------------------------------------------- explore-asset
+def _cr_allows(st: dict, reg: dict, act: str, aid: str | None) -> bool:
+    """승인된 DD에서도 진행 중인 Type B 변경 요청(CR) 범위의 자산만 교체·권리 재확인을 허용합니다(change-request.md §5).
+    - replace: CR이 선언한 자산(제자리 패치)
+    - confirm: CR이 선언한 자산이거나, 후속 자산을 기다리는 CR이 있을 때 승인 스냅샷에 없는 새 자산
+    승인 스냅샷은 바뀌지 않습니다. 결과는 change submit·approve를 거쳐 패치로만 유효 기준이 됩니다."""
+    if ((st.get("stages") or {}).get("design_direction") or {}).get("status") != "approved":
+        return False
+    import pd_change as CH
+    eff = CH.effective(st)
+    if not eff["ok"]:
+        return False
+    snap = (eff["records"].get("design_direction") or {}).get("assets") or {}
+    for cr in CH.active_crs(st).values():
+        if cr["type"]["selected"] != "B":
+            continue
+        sc = cr.get("scope") or {}
+        if aid in (sc.get("assets") or []) and (act == "replace" or act == "confirm"):
+            return True
+        if act == "confirm" and aid not in snap and aid in reg.get("assets", {}) and (sc.get("successor_pending") or sc.get("successors")) \
+                and aid not in (cr["base"].get("registry") or {}):
+            return True
+    return False
+
+
 def cmd_explore_asset(a) -> None:
     EX = _ex()
     project = Path(a.project).resolve()
@@ -216,7 +242,10 @@ def cmd_explore_asset(a) -> None:
     act = a.action
     note = (a.note or "").strip()
     dd_status = ((st.get("stages") or {}).get("design_direction") or {}).get("status")
-    if act in ("replace", "confirm") and dd_status in ("awaiting_approval", "approved"):
+    if act in ("replace", "confirm") and dd_status == "approved" and _cr_allows(st, reg, act, a.id):
+        import pd_change as CH
+        CH.note_rights_backup(st, a.id)  # 취소 시 권리 기록 복원용(승인 스냅샷은 바뀌지 않음)
+    elif act in ("replace", "confirm") and dd_status in ("awaiting_approval", "approved"):
         block("assets_locked_by_approval",
               f"Design Direction이 {dd_status} 상태라 자산을 교체하거나 권리를 다시 확인할 수 없습니다. 승인 기록의 자산 스냅샷이 공식 기준입니다. "
               "자산을 바꾸려면 사용자 확인 후 reopen --stage design_direction으로 다시 열고, 수정 → 제출 → 재승인합니다(P0).",
@@ -307,6 +336,9 @@ def cmd_explore_asset(a) -> None:
         rel = f"{assets_dir(st)}/{aid}{src.suffix.lower() if src.suffix.lower() != '.jpeg' else '.jpg'}"
         dst = project / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
+        old_raw = dst.read_bytes() if (act == "replace" and dst.is_file()) else None
+        if act == "replace" and old_raw is None and (project / str(reg["assets"][aid].get("file") or "")).is_file():
+            old_raw = (project / str(reg["assets"][aid]["file"])).read_bytes()
         if src.resolve() != dst.resolve():
             shutil.copyfile(src, dst)
         w, hh = _dims(fmt, raw)
@@ -315,18 +347,51 @@ def cmd_explore_asset(a) -> None:
             "fallback": a.fallback or ("hide" if role == "decorative" else "label"),
             "rights": {"license": (a.license or "unknown").strip(), "confirmed_by_user": False, "statement": None}, "added_at": now()}
         rec.update(file=rel, sha256=h, format=fmt, width=w, height=hh, bytes=len(raw))
+        inherit = None
+        import pd_change as CH
         if act == "replace":
             rec.setdefault("history", []).append({"at": now(), "statement": note, "sha256": h})
-            rec["rights"] = dict(rec.get("rights") or {}, confirmed_by_user=False, statement=None)  # 새 파일은 권리 재확인
-            rights_records(st).pop(aid, None)
+            prev_rights = dict(rec.get("rights") or {})
+            if dd_status == "approved":  # 진행 중 Type B CR의 제자리 보정: 같은 자산의 이전 승인 권리를 이어받을 수 있는지
+                inherit = CH.rights_inheritance(project, st, aid, rec | {"rights": prev_rights}, raw, old_raw, in_place=True)
+            if inherit and inherit["ok"]:
+                rec["rights"] = {"license": prev_rights.get("license"), "confirmed_by_user": False, "statement": None,
+                                 "inherited_from": aid, "at": now()}
+            else:
+                rec["rights"] = dict(prev_rights, confirmed_by_user=False, statement=None)  # 새 파일은 권리 재확인
+                rights_records(st).pop(aid, None)
+        elif getattr(a, "derived_from", None):  # 승인 자산의 파생본(후속 자산)
+            rec_tmp = rec | {"format": fmt}
+            inherit = CH.rights_inheritance(project, st, a.derived_from, rec_tmp, raw)
+            if inherit["ok"]:
+                rec["rights"] = {"license": rec["rights"]["license"], "confirmed_by_user": False, "statement": None,
+                                 "inherited_from": a.derived_from, "at": now()}
         if rec["source"] == "reference_derived":
             rec["rights"]["license"] = rec["rights"].get("license") or "unknown"
         reg["assets"][aid] = rec
+        if inherit and inherit["ok"]:
+            parent = a.derived_from if act == "add" else aid
+            pr = inherit["parent_rights"] or {}
+            rights_records(st)[aid] = {"sha256": h, "license": rec["rights"]["license"], "statement": None, "at": rec["rights"]["at"],
+                                       "inherited_from": {"asset": parent, "statement": pr.get("statement"), "confirmed_at": pr.get("confirmed_at"),
+                                                          "cr": inherit["cr"], "pixels": inherit["pixels"].get("verdict")}}
+            if act == "add":
+                for cr in CH.active_crs(st).values():
+                    if cr["id"] == inherit["cr"]:
+                        cr["scope"].setdefault("successors", {})[parent] = aid
+                        cr["scope"]["successor_pending"] = sorted(set(cr["scope"].get("successor_pending") or []) - {parent})
+                        cr.setdefault("rights_backup", {}).setdefault(aid, None)
         save_registry(project, st, reg)
-        add_history(st, "design_direction", f"asset_{act}", st["stages"]["design_direction"]["revision"], f"{aid} {kind}/{role} {rec['source']}: {note[:60]}")
+        add_history(st, "design_direction", f"asset_{act}", st["stages"]["design_direction"]["revision"],
+                    f"{aid} {kind}/{role} {rec['source']}: {note[:60]}" + (f" (권리 상속: {inherit['cr']})" if inherit and inherit["ok"] else ""))
         save_state(project, st)
         e, wn = asset_problems(project, st, reg, aid)
-        emit({"ok": not e, "asset": aid, "file": rel, "sha256": h, "official_ok": official_ok(rec), "errors": e, "warnings": wn})
+        out = {"ok": not e, "asset": aid, "file": rel, "sha256": h, "official_ok": official_ok(rec), "errors": e, "warnings": wn}
+        if inherit is not None:
+            out["rights"] = ({"status": "inherited", "from": a.derived_from if act == "add" else aid, "note": "승인된 부모 자산의 권리 근거를 연결했습니다(새 사용자 문장 없음). 최종 패치 확인 때 함께 보여 줍니다."}
+                             if inherit["ok"] else {"status": "confirmation_required", "reasons": inherit["reasons"],
+                                                    "note": "권리 상속 조건이 아니어서 별도 권리 확인(explore-asset confirm)이 필요합니다."})
+        emit(out)
     if act == "confirm":
         if a.id not in reg["assets"]:
             block("invalid_arguments", f"등록되지 않은 자산 {a.id}")

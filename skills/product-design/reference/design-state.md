@@ -244,3 +244,13 @@ python3 $SKILL/scripts/product_design.py migrate --project "$PWD" --to v2 --them
 - **어느 경로든 최종 승인은 같습니다**: `design-preview/` 트리 해시 + 06(시각 디자인 승인).
 - Figma를 쓸 수 없으면(호출 한도 등) 06 '사용 렌더러'를 `code`로 바꾸고 '전환 사유'를 적으면 Code-first로 진행합니다. code가 아닌 다른 경로로 바꾸려면 Design Direction을 다시 엽니다.
 - 프리뷰 승인 기록에 `renderer: {planned, used, switched, reason}`을 남깁니다. 엔진은 Figma를 호출하지 않습니다.
+
+### 변경 요청·승인 패치(M1, `reference/change-request.md`)
+
+| 항목 | 내용 |
+|---|---|
+| 설정 `config.changes` | `{enabled, at, statement}`. **없으면 기능 꺼짐**(기존 프로젝트 그대로). v2 전용, `change enable`(계획 → `--confirm --note`)로만 생김 |
+| 상태 `changes` | `{seq, items{CR-…}, chain[AMD-…], head{count, digest}}` |
+| 유효 승인 기준 | 단계 `approved` + 같은 승인 revision을 기준으로 한 패치(`chain[].stages.<단계>`)를 순서대로 적용. 원래 승인 기록은 바꾸지 않음. 계산은 `pd_change.effective()` 하나 |
+| 문제 종류 | `pending_change`(진행 중 CR 범위 안 변경 — 승인 아님), `amendment_chain_broken`(체인 삭제·순서·위조·기준 불일치 — 차단) |
+| 쓰기 안전 | 모든 `save_state`: O_EXCL 잠금 `.ai-workflow/.design.lock`, 읽은 뒤 다른 명령이 바꿨으면 `state_conflict`. 읽을 때 중복 키는 `state_duplicate_keys`, 병합 충돌 표시는 `state_unreadable` |

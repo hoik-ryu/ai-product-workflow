@@ -1,0 +1,32 @@
+{
+  "schema": "design-change-request/v1",
+  "about": "변경 유형(A–E) 분류 정답 사례. 화면 수·파일 수가 아니라 바뀌는 계약의 성격으로 판정합니다(reference/change-request.md §2). expected는 테스트 전용 필드이며 엔진은 읽지 않습니다. SM*는 SMAPSH 사례 리허설(실제 저장소 아님)입니다.",
+  "items": [
+    {"id": "A1", "summary": "승인 명세대로 제품 버튼 클릭 버그 수정", "facts": [{"kind": "render_fix", "target": "product", "screen": "SCR-001"}], "expected": {"minimum": "A", "status": "classified"}},
+    {"id": "A2", "summary": "오래된 테스트 스크립트 수정", "facts": [{"kind": "test_fix"}], "expected": {"minimum": "A", "status": "classified"}},
+    {"id": "B1", "summary": "배너 가장자리 마스크 보정", "facts": [{"kind": "asset_patch", "asset": "AST-001", "op": "mask"}], "expected": {"minimum": "B", "status": "classified"}},
+    {"id": "B2", "summary": "문서 오탈자", "facts": [{"kind": "typo", "doc": "docs/design/06-preview-review.md"}], "expected": {"minimum": "B", "status": "conditional"}},
+    {"id": "B3", "summary": "승인 프리뷰의 렌더링 결함 수정", "facts": [{"kind": "render_fix", "target": "preview", "screen": "SCR-001"}], "expected": {"minimum": "B", "status": "conditional"}},
+    {"id": "C1", "summary": "기존 버튼 위치 이동", "facts": [{"kind": "placement", "component": "CMP-001", "screen": "SCR-001", "spec_rule": "fixed"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "C2", "summary": "기존 버튼 크기 변경", "facts": [{"kind": "dimension", "component": "CMP-001", "property": "height", "value": 56}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "C3", "summary": "기존 정보의 표시 위치 변경", "facts": [{"kind": "info", "op": "reorder", "screen": "SCR-002"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "C4", "summary": "기능 유지 레이아웃 변경", "facts": [{"kind": "layout", "screen": "SCR-002"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "C5", "summary": "배너 이미지 비율 변경", "facts": [{"kind": "asset_patch", "asset": "AST-001", "op": "ratio"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "C6", "summary": "배너 구도 변경", "facts": [{"kind": "asset_patch", "asset": "AST-001", "op": "composition"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "D1", "summary": "전역 주 색 값 변경", "facts": [{"kind": "token_value", "token": "color.action.primary", "to": "#0E6B4F"}], "expected": {"minimum": "D", "status": "classified"}},
+    {"id": "D2", "summary": "공통 컴포넌트 계약 변경", "facts": [{"kind": "component_contract", "component": "CMP-001"}], "expected": {"minimum": "D", "status": "classified"}},
+    {"id": "D3", "summary": "공통 내비게이션 구조 변경", "facts": [{"kind": "navigation"}], "expected": {"minimum": "D", "status": "classified"}},
+    {"id": "E1", "summary": "버튼 실제 동작 변경(단일 화면)", "facts": [{"kind": "behavior", "screen": "SCR-001", "component": "CMP-001"}], "expected": {"minimum": "E", "status": "classified"}},
+    {"id": "E2", "summary": "권한 정책 변경", "facts": [{"kind": "permission", "screen": "SCR-002"}], "expected": {"minimum": "E", "status": "classified"}},
+    {"id": "E3", "summary": "새 비즈니스 정보 추가(단일 화면)", "facts": [{"kind": "info", "op": "add", "screen": "SCR-003"}], "expected": {"minimum": "E", "status": "classified"}},
+    {"id": "E4", "summary": "AC 변경", "facts": [{"kind": "acceptance", "refs": ["AC-001"]}], "expected": {"minimum": "E", "status": "classified"}},
+    {"id": "E5", "summary": "데이터 처리 정책 변경", "facts": [{"kind": "data_policy"}], "expected": {"minimum": "E", "status": "classified"}},
+    {"id": "U1", "summary": "승인 문서에 없는 화면 참조", "facts": [{"kind": "layout", "screen": "SCR-999"}], "expected": {"minimum": "D", "status": "needs_review"}},
+    {"id": "U2", "summary": "알 수 없는 사실 + 기획 참조", "facts": [{"kind": "mystery", "refs": ["US-001"]}], "expected": {"minimum": "E", "status": "needs_review"}},
+    {"id": "SM1", "summary": "Soft Mint 전역 디자인 시스템(토큰 값 일괄 변경)", "facts": [{"kind": "token_value", "token": "color.action.primary", "to": "#7FD1B9"}, {"kind": "component_contract", "component": "CMP-001"}], "expected": {"minimum": "D", "status": "classified"}},
+    {"id": "SM2", "summary": "청백전 배너 원본 구도·비율 복원", "facts": [{"kind": "asset_patch", "asset": "AST-001", "op": "composition"}, {"kind": "asset_patch", "asset": "AST-001", "op": "ratio"}], "expected": {"minimum": "C", "status": "classified"}},
+    {"id": "SM3", "summary": "배너 가장자리 1px 반투명 결함(AST-081 → AST-082 같은 마스크 수정)", "facts": [{"kind": "asset_patch", "asset": "AST-001", "op": "mask", "successor": true}], "expected": {"minimum": "B", "status": "classified"}},
+    {"id": "SM4", "summary": "제품 코드의 이미지 렌더링 결함 수정", "facts": [{"kind": "render_fix", "target": "product", "screen": "SCR-001"}], "expected": {"minimum": "A", "status": "classified"}},
+    {"id": "SM5", "summary": "오래된 E2E 스크립트 수정", "facts": [{"kind": "test_fix"}], "expected": {"minimum": "A", "status": "classified"}}
+  ]
+}

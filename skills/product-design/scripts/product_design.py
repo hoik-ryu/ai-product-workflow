@@ -30,6 +30,7 @@ LLM은 인터뷰, 문서 작성, 프리뷰 화면 작성만 맡습니다. 게이
              explore-tokens·adopt·impact(2차: 후보 테마 토큰 CSS·후보 VD/테마 채택·후보 변경 영향, pd_visual.py),
              explore-asset add·replace·confirm·style·list·check·sync(시각 자산 계약, pd_assets.py), explore-quality(시각 품질 평가 계약, pd_quality.py), explore-renderer status·enable·disable·allow-transfer(렌더러 계약, pd_render.py),
              explore-ref add·list·privacy·extract-check·confirm·intent·candidates·policy·withdraw·track(레퍼런스 기반 탐색, pd_reference.py)
+  change     변경 요청(CR)·승인 패치(M1, pd_change.py): plan(읽기 전용 A–E 분류·영향) · enable/disable · open · scope · verify · submit · approve · cancel · rebase · status
   temp-dir   일회성 캡처·측정·로그용 실행 폴더(저장소 밖, --purpose [--keep --note] | --mark-keep <폴더> --note, pd_temp.py). 상태 불변
 
 모든 출력은 JSON이며, 차단·실패 시 종료 코드 2를 반환합니다.
@@ -62,7 +63,8 @@ import pd_assets as PA  # noqa: E402  (EX5.1 시각 자산 계약)
 import pd_quality as QL  # noqa: E402  (EX5.1 시각 품질 평가 계약)
 import pd_render as RDR  # noqa: E402  (EX7 렌더러 공통 계약·Figma 선택 연동)
 import pd_reference as RF  # noqa: E402  (레퍼런스 기반 탐색 EX3: §2.12)
-import pd_temp as TP  # noqa: E402  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
+import pd_temp as TP  # noqa: E402
+import pd_change as CH  # noqa: E402  (변경 요청·승인 패치 M1: reference/change-request.md)  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
 
 
 def annotate_problems(project: Path, st: dict, cv: dict) -> None:
@@ -110,6 +112,9 @@ def cmd_check(a) -> None:
     cv = cross_verify(project, st)
     out = {"ok": cv["consistent"], "status": overall_status(st), "stages": {k: {"status": v["status"], "revision": v["revision"]} for k, v in st["stages"].items()},
            "cross_verify": cv, "preflight": ctx["preflight"], "next": next_action(st), "display_note": DISPLAY_NOTE}
+    sm = CH.summary(project, st)
+    if sm is not None:
+        out["changes"] = sm
     if workflow_of(st) == "v2":
         out["workflow"] = workflow_info(st)
         annotate_problems(project, st, cv)
@@ -452,6 +457,10 @@ def cmd_reopen(a) -> None:
     s = st["stages"][stage]
     if s["status"] not in ("approved", "awaiting_approval"):
         block("invalid_transition", f"{stage} 상태가 {s['status']}입니다. approved/awaiting_approval만 다시 열 수 있습니다.")
+    act_crs = CH.active_crs(st)
+    if act_crs:
+        block("change_pending", f"진행 중인 변경 요청({', '.join(act_crs)})이 있어 단계를 다시 열 수 없습니다. 먼저 완료하거나 되돌린 뒤 cancel 하세요.",
+              changes=sorted(act_crs))
     event = "reopened" if s["status"] == "approved" else "changes_requested"
     if s.get("approved"):
         s["last_approved"] = s["approved"]
@@ -677,22 +686,8 @@ def cmd_preview_verify(a) -> None:
     steps = []
     result = "fail"
     if pc["ok"]:
-        root = project / PREVIEW_DIR
-        lock = (root / "pnpm-lock.yaml").exists()
-        cmds = [["pnpm", "install", "--frozen-lockfile"] if lock else ["pnpm", "install"], ["pnpm", "run", "build"]]
-        result = "pass"
-        for cmd in cmds:
-            try:
-                p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=a.timeout)
-                rc, out = p.returncode, (p.stdout + p.stderr)
-            except FileNotFoundError:
-                rc, out = 127, "pnpm을 찾을 수 없습니다."
-            except subprocess.TimeoutExpired:
-                rc, out = 124, "시간 초과"
-            steps.append({"run": " ".join(cmd), "exit": rc, "tail": out.strip().splitlines()[-15:]})
-            if rc != 0:
-                result = "fail"
-                break
+        b = preview_build(project, a.timeout)
+        result, steps = b["result"], b["steps"]
     s["verification"] = {"result": result, "at": now(), "tree_hash": preview_tree_hash(project), "check": pc, "steps": steps}
     if workflow_of(st) == "v2":
         s["verification"].update(preview_v2_hashes(project, st))
@@ -843,6 +838,7 @@ def cmd_status(a) -> None:
     st = require_state(project)
     gate = read_gate(project)
     cv = cross_verify(project, st)
+    sm = CH.summary(project, st)
     emit({"ok": cv["consistent"] and gate["ok"], "overall": overall_status(st),
           "stages": {k: {"status": v["status"], "revision": v["revision"],
                          "approved_revision": (v.get("approved") or {}).get("revision")} for k, v in st["stages"].items()},
@@ -850,6 +846,7 @@ def cmd_status(a) -> None:
           "validity": st.get("validity"), "gate_ok": gate["ok"], "state_yaml_design_status": gate.get("state_yaml_design_status"),
           "cross_verify": cv, "next": next_action(st), "display_note": DISPLAY_NOTE,
           **({"workflow": workflow_info(st)} if workflow_of(st) == "v2" else {}),
+          **({"changes": sm} if sm is not None else {}),
           **({"exploration": EX.exploration_summary(st)} if EX.exploration_summary(st) is not None else {})})
 
 
@@ -927,6 +924,7 @@ def main() -> None:
     s.add_argument("--file"); s.add_argument("--id"); s.add_argument("--kind"); s.add_argument("--role"); s.add_argument("--source")
     s.add_argument("--license"); s.add_argument("--refs", default=""); s.add_argument("--depicts", default=""); s.add_argument("--fallback")
     s.add_argument("--set", action="append"); s.add_argument("--round"); s.add_argument("--note", default="")
+    s.add_argument("--derived-from", help="승인 자산의 파생본(후속 자산): 진행 중 Type B 변경 요청에서 권리 상속 조건이면 별도 확인 없이 근거 연결")
     s = add("explore-choose", EX.cmd_explore_choose); s.add_argument("--round", required=True)
     s.add_argument("--variant"); s.add_argument("--per-target"); s.add_argument("--note", default="")
     s.add_argument("--evidence", action="append"); s.add_argument("--feedback", action="append"); s.add_argument("--coverage-note", default="")
@@ -939,6 +937,13 @@ def main() -> None:
     s.add_argument("--ref"); s.add_argument("--by"); s.add_argument("--result"); s.add_argument("--items"); s.add_argument("--decision")
     s.add_argument("--use", action="append"); s.add_argument("--only", default=""); s.add_argument("--note", default="")
     s.add_argument("--limit", action="append")
+    s = add("change", CH.cmd_change)
+    s.add_argument("action", choices=("plan", "enable", "disable", "open", "scope", "verify", "submit", "approve", "cancel", "rebase", "status"))
+    s.add_argument("--request"); s.add_argument("--base"); s.add_argument("--id"); s.add_argument("--type", choices=CH.TYPES)
+    s.add_argument("--scope-note", default=""); s.add_argument("--pre-confirm", default=""); s.add_argument("--note", default="")
+    s.add_argument("--reason", default=""); s.add_argument("--accept", action="store_true"); s.add_argument("--confirm", action="store_true")
+    s.add_argument("--timeout", type=int, default=600); s.add_argument("--simulate-failure", action="store_true", help=argparse.SUPPRESS)
+    s.add_argument("--screen-waiver", default="", help="측정 환경이 없을 때만: 사용자 면제 문장(검증 완료가 아니라 waived로 기록)")
     s = add("temp-dir", cmd_temp_dir)
     s.add_argument("--purpose"); s.add_argument("--keep", action="store_true"); s.add_argument("--note", default="")
     s.add_argument("--location", choices=("auto", "outside", "repo"), default="auto"); s.add_argument("--mark-keep")

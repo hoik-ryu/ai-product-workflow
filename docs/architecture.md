@@ -100,6 +100,7 @@
 - **표시 정책**: `state.yaml`의 `design: not_started`는 "디자인 단계가 열림" 표시입니다. 디자인 진행 상태의 기준은 `design.json`이며, `/product-design`은 상태를 보고할 때 이 관계를 함께 알립니다.
 - **프리뷰와 제품 코드의 경계**: 프리뷰는 `design-preview/`에만 있고 실제 API·인증·비즈니스 로직이 없습니다. `frontend/`와 서로 import하지 않습니다. 실제 구현은 `/product-build`가 담당하며, 시각 디자인 승인 전에는 UI 구현 완료로 판단하지 않습니다.
 - **Figma**: 선택적 외부 참조(06 문서의 링크)만 지원합니다. 자동 생성은 하지 않습니다.
+- **승인 후 변경 요청(M1, `reference/change-request.md`)**: 변경을 A–E(구현 수정·경미한 패치·범위 한정·디자인 시스템·요구사항)로 판정하고 필요한 승인만 요구합니다. Type B는 단계 승인 기록을 바꾸지 않고 덧붙이기 전용 패치 체인(`changes.chain`)으로 기록하며, 유효 승인 기준 = 승인 기록 + 패치 체인입니다(계산은 `pd_change.effective()` 하나). Type C 부분 승인은 M2, Worktree 간 통합은 M3입니다. v2에서 `change enable`로 켠 프로젝트만 해당합니다.
 
 ### 이후 Skill과의 연결
 

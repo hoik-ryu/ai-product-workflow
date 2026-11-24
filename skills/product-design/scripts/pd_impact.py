@@ -322,10 +322,15 @@ def load_change_request(path: Path) -> list[dict]:
 
 
 def _git_old(project: Path, base: str, rel: str) -> str:
-    try:
-        return git(project, "show", f"{base}:{rel}")
-    except RuntimeError:
-        return ""
+    """기준 커밋의 파일 내용(텍스트). 이미지 같은 바이너리도 깨지지 않게 읽습니다(UTF-8로 못 읽는 바이트는 대체 문자)."""
+    import subprocess
+    p = subprocess.run(["git", "show", f"{base}:{rel}"], cwd=project, capture_output=True)
+    return p.stdout.decode("utf-8", errors="replace") if p.returncode == 0 else ""
+
+
+def _read_now(project: Path, rel: str) -> str:
+    p = project / rel
+    return p.read_bytes().decode("utf-8", errors="replace") if p.is_file() else ""
 
 
 def file_change_items(project: Path, st: dict, base: str, ctx: dict) -> tuple[list[dict], list[str]]:
@@ -338,7 +343,7 @@ def file_change_items(project: Path, st: dict, base: str, ctx: dict) -> tuple[li
     changed += [x for x in git(project, "ls-files", "--others", "--exclude-standard").splitlines() if x]
     items, unrelated = [], []
     for rel in sorted(set(changed)):
-        old, new = _git_old(project, base, rel), read_text(project, rel)
+        old, new = _git_old(project, base, rel), _read_now(project, rel)
         stage = stage_of(rel)
         facts: list[dict] = []
         def fact(cat, conf, reason, **ev):

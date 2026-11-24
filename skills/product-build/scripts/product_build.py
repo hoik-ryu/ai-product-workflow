@@ -25,7 +25,7 @@ from pb_core import (  # noqa: E402
     BOILERPLATE_REL, BUILD_DIR_REL, DESIGN_STATE_REL, GENERATED_MARK, PLAN_FILES, PLAN_JSON_REL, PLAN_MD_REL, PROFILE_REL,
     STATE_REL, Blocked, add_history, baseline_changes, block, design_info, emit, engine_ref, git_lines, input_baseline,
     is_protected, load_profile, load_state, new_state, now, planning_gate, preflight, require_planning, require_state,
-    save_state, sha_file, write_owned,
+    save_state, sha_file, write_owned, design_pending_hits, amendment_stale_reason, design_chain_raw,
 )
 from pb_inputs import compute_scope, load_model  # noqa: E402
 from pb_plan import draft, render_md, suggest_groups, validate, waiver_valid  # noqa: E402
@@ -594,6 +594,7 @@ def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[di
     if pending:
         block("dependencies_not_ready", f"{batch_id}의 선행 배치가 아직 끝나지 않았습니다({prof['execution']['dependency_min']} 이상 필요): {', '.join(pending)}",
               pending={d: st["batches"].get(d, {}).get("status") for d in pending})
+    _pending_block(dinfo, b, read_plan_batch_safe(project, batch_id), batch_id, "시작·재개")
     if b.get("requires_design"):
         if b.get("design_path") == "preview_approved" and dinfo["level"] != "L3":
             block("design_not_ready", "계획은 승인된 프리뷰를 기준으로 했지만 지금은 프리뷰 승인이 유효하지 않습니다.")
@@ -604,6 +605,21 @@ def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[di
     plan = read_plan(project)
     pb_ = next((x for x in plan["batches"] if x.get("id") == batch_id), None)
     return b, pb_, dinfo
+
+
+def read_plan_batch_safe(project: Path, batch_id: str) -> dict | None:
+    return _plan_batches(project).get(batch_id)
+
+
+def _pending_block(dinfo: dict, b: dict, plan_batch: dict | None, batch_id: str, action: str) -> None:
+    """진행 중인 디자인 변경 요청(CR)이 이 배치 화면에 영향을 주면 차단합니다. 승인 전 변경은 승인된 디자인이 아닙니다."""
+    if b.get("requires_design") and (dinfo.get("changes") or {}).get("chain_ok") is False:
+        block("design_amendment_chain_broken", f"/product-design 승인 패치 체인에 문제가 있어 {batch_id}를 {action}할 수 없습니다(유효 디자인 기준을 확정할 수 없음).")
+    hits = design_pending_hits(dinfo, plan_batch, bool(b.get("requires_design")))
+    if hits:
+        block("design_change_pending", f"{batch_id}의 화면에 영향을 주는 디자인 변경 요청이 진행 중입니다({', '.join(str(h['cr']) for h in hits)}). "
+              f"승인 전 변경은 승인된 디자인이 아니므로 {action}할 수 없습니다. 변경 요청이 승인(또는 취소)된 뒤 진행합니다.",
+              changes=hits, batch_screens=(plan_batch or {}).get("screens"))
 
 
 def waiting_policy(b: dict) -> bool:
@@ -1062,6 +1078,9 @@ def freshness(project: Path, prof: dict, bid: str, b: dict, plan_batch: dict | N
         return "검증 실행 원본(run.json)이 없거나 digest가 맞지 않습니다(증거 유실·조작 의심)"
     if plan_batch is None:
         return "계획에서 배치를 찾을 수 없습니다"
+    amd = amendment_stale_reason(project, b, plan_batch)  # 승인된 디자인 패치(Type B) 영향 화면 → 이 배치만 재검증
+    if amd:
+        return amd
     case_files = v.get("case_files", [])
     scope = batch_scope_files(project, prof, plan_batch, b, case_files)
     if tree_hash(project, scope) != v.get("scope_tree"):
@@ -1174,6 +1193,7 @@ def cmd_approve_batch(a, project: Path, st: dict) -> None:
     if w:
         block("verification_stale", f"검증 이후 바뀐 것이 있어 승인할 수 없습니다: {w}. 다시 검증하세요.")
     policy_block(project, a.batch, "최종 승인")
+    _pending_block(design_info(project), b, pbs.get(a.batch), a.batch, "최종 승인")
     up = upstream_problems(project, st, prof, a.batch, pbs)
     if up:
         block("upstream_not_verified", "선행 배치의 검증이 유효하지 않아 승인할 수 없습니다.", upstream=up)
@@ -1303,6 +1323,7 @@ def cmd_verify(a) -> None:
     if not b:
         block("unknown_batch", f"승인된 계획에 {a.batch}가 없습니다.")
     plan_batch = read_plan_batch(project, a.batch)
+    _pending_block(design_info(project), b, plan_batch, a.batch, "검증")
     probe = b["status"] == "in_progress"
     lock = None
     if probe:
@@ -1405,7 +1426,7 @@ def cmd_verify(a) -> None:
         prev_status, prev_scope = b["status"], (b.get("verification") or {}).get("scope_tree")
         b["verification"] = summary | {"evaluation": ev, "reasons": reasons, "code_tree": run["tree_after"], "case_files": case_files,
                                        "scope_tree": tree_hash(project, scope), "deps": deps_affecting(run["deps_tree"], scope),
-                                       "targets": effective_targets(b)}
+                                       "targets": effective_targets(b), "design_amendments": len(design_chain_raw(project))}
         if ui:
             b["verification"]["ui"] = ui
         prev_ui = next((x.get("ui") for x in reversed(b.get("approvals") or []) if x.get("valid")), None)

@@ -202,6 +202,10 @@ def official_design(project: Path, st: dict | None = None) -> dict:
     stages = st.get("stages") or {}
     dd = stages.get("design_direction") or {}
     rec = dd.get("approved") if dd.get("status") == "approved" else None
+    if rec is not None:
+        import pd_change as CH  # 유효 승인 기준(승인 기록 + 승인 패치)의 단일 구현. 체인이 깨지면 공식 디자인을 인정하지 않음
+        eff = CH.effective(st)
+        rec = eff["records"].get("design_direction") if eff["ok"] else None
     intact = bool(rec) and (rec.get("hashes") or {}).get(DD_FILE) == (sha256_file(project / DD_FILE) if (project / DD_FILE).is_file() else None)
     text = strip_fences(re.sub(r"<!--.*?-->", "", read_text(project, DD_FILE), flags=re.S))
     blocks = blocks_by_heading(text, 3, "VD")
@@ -229,7 +233,7 @@ def official_design(project: Path, st: dict | None = None) -> dict:
         if not isinstance(a, dict):
             continue
         r = a.get("rights") or {}
-        rights_ok = bool(r.get("confirmed_by_user")) and str(r.get("license") or "").lower() not in ("", "unknown", "unconfirmed") \
+        rights_ok = (bool(r.get("confirmed_by_user")) or bool(r.get("inherited_from"))) and str(r.get("license") or "").lower() not in ("", "unknown", "unconfirmed") \
             and a.get("source") != "reference_derived"
         f = project / str(a.get("file") or "")
         intact_a = f.is_file() and sha256_file(f) == a.get("sha256")

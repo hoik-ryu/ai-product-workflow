@@ -15,9 +15,10 @@ disable-model-invocation: true
 - `reference/review-checklist.md`: UX·접근성 검토 체크리스트
 - `reference/preview.md`: 프리뷰 경계·위치·실행·피드백
 - `reference/change-impact.md`: 디자인 변경 영향 분류(`impact --design`, 다섯 유형·입력 형식·영향 계산)
+- `reference/change-request.md`: 승인 후 변경의 유형(A–E)·변경 요청(CR)·승인 패치(Amendment)·유효 승인 기준(M1: Type B 실행)
 - `reference/exploration.md`: 디자인 탐색(1차 구조 시안 비교·선택 → UXD, 2차 시각 시안·레퍼런스·자산·측정·품질 평가·렌더러 → 후보 VD·테마, 15절 승인 무결성), frontend-design 절차
 - `templates/00`–`07`: 문서 템플릿(07 Design Direction은 v2), `templates/theme.example.json`: v2 테마 계약 예시, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
-- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`와 디자인 탐색 모듈(`pd_explore.py`·`pd_reference.py`·`pd_measure.py`·`pd_visual.py`·`pd_assets.py`·`pd_quality.py`·`pd_guard.py`·`pd_render.py`)을 불러옵니다(직접 실행하지 않음)
+- `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`와 디자인 탐색 모듈(`pd_explore.py`·`pd_reference.py`·`pd_measure.py`·`pd_visual.py`·`pd_assets.py`·`pd_quality.py`·`pd_guard.py`·`pd_render.py`), 변경 요청 모듈(`pd_change.py`·`pd_pixel.py`·`pd_screens.py`)을 불러옵니다(직접 실행하지 않음)
 
 호출 형식: `python3 $SKILL/scripts/product_design.py <명령> --project "$PWD" ...`
 
@@ -99,6 +100,25 @@ disable-model-invocation: true
 - 이전 UX 결정 변경: `refs --id UXD-###`로 영향 화면을 보고합니다.
 - 디자인 변경 요청은 먼저 `impact --design`으로 분류합니다(① 정보·행동, ② 토큰 의미·이름, ③ 테마 값, ④ 시각 표현, ⑤ 구현 메모). 결과의 `effective_stage`·`reapproval_stages`를 사용자에게 보여 주고, `needs_review`·`conditional` 항목은 사용자 판단을 받습니다. 목표 단계가 아직 없는 유형(`target_available: false`)은 없다고 설명하고, 지금 적용되는 단계로 처리합니다. 분류 결과만으로 `reopen`하지 않습니다(사용자 확인 필요).
 - 작업 트리의 디자인 파일 변경은 `impact --design`(기본 기준 `HEAD`)으로 파일·토큰 이름 기준 분류를 볼 수 있습니다.
+
+## 5-1단계 — 승인 후 변경 요청(CR, v2 + `change enable`한 프로젝트, `reference/change-request.md`)
+
+승인된 디자인을 바꾸는 자연어 요청은 이 순서로 처리합니다. 사용자에게 A–E를 매번 고르게 하지 않습니다.
+
+1. 요청을 사실 목록으로 정리해 **프로젝트 밖** 임시 파일에 쓰고 `change plan --request <파일>`(읽기 전용)을 실행합니다. 이미 파일을 고쳤다면 `--base HEAD`로 실제 차이도 판정됩니다.
+2. 결과의 유형(`type.recommended`·`minimum`), 영향 범위(`scope`: 화면·상태·컴포넌트·자산·토큰·AC), 필요한 승인·검증(`required`), 경로(`route`)를 짧게 알립니다.
+3. 유형별 진행
+   - **A**: 디자인 승인 유지. 승인 산출물(docs/design·design-preview·자산·테마·기획)은 건드리지 않고 /product-build(guard·verify)로 진행합니다.
+   - **B**: `pre_confirmation_required`가 false이고 요청이 구체적이면 **사용자의 요청 원문**을 `--scope-note`로 넘겨 `change open` 하고 바로 작업합니다(추가 질문 없음). 오탈자는 `{"kind":"typo","doc","from","to"}`, 프리뷰 렌더링 보정은 `{"kind":"render_fix","target":"preview","screen" 또는 "files"}`처럼 대상을 구체적으로 적으면 실제 차이로 판정합니다. true이면 그 이유를 보여 주고 확인 문장을 받아 `--pre-confirm`으로 넘깁니다.
+   - **C**: 영향 화면과 함께 "부분 승인은 아직 없어 기존 정식 경로(`reopen --stage …`)로 진행해야 한다"고 설명하고 확인을 받습니다(M2 예정).
+   - **D·E**: 기존 `reopen`·`/product-start` 재검토 경로를 안내합니다.
+   - 사용자가 더 엄격한 유형을 원하면 그대로 따릅니다. 더 낮은 유형은 엔진이 거부합니다(`change_type_insufficient`).
+4. Type B 작업: 범위 안의 파일만 고칩니다. 자산 보정은 새 자산을 `explore-asset add --derived-from <승인 자산>`으로 등록하고 07 VD 관련의 ID와 프리뷰 사본을 바꾸거나(후속 자산), 선언한 자산을 `explore-asset replace`합니다(제자리). 결과의 `rights.status`가 `inherited`면 권리 확인을 따로 묻지 않습니다(최종 확인 때 함께 보여 줌). `confirmation_required`면 사유를 보여 주고 `explore-asset confirm`(사용자 문장)이 필요합니다. 사용자 문장을 지어내거나 다른 확인을 권리 확인으로 넓혀 쓰지 않습니다.
+5. `change verify --id` → 전체 앱 빌드와 영향 화면 실제 브라우저 검증(측정 명령이 확인돼 있어야 함)을 따로 봅니다. 측정이 실제로 끝나지 않으면 통과가 아니며, 측정 환경이 없을 때만 사용자 문장으로 `--screen-waiver`(면제로 따로 기록)를 씁니다. 실제 차이를 자동 판정할 수 없다는 `pre_confirmation_required`가 나오면 그 차이를 보여 주고 확인 문장을 받아 `change scope --accept --note`로 기록합니다. 실패 항목을 고칩니다. `scope_expanded`·`change_escalated`가 나오면 바뀐 범위·유형을 사용자에게 보여 주고, 재확인 문장을 받아 `change scope --accept --note` 하거나, 되돌린 뒤 `change cancel` 후 정식 경로로 갑니다.
+6. `change submit --id` → 전후 비교(자산 픽셀 비교 결과·바뀐 파일·영향 화면, 필요하면 프리뷰 실행 안내)를 보여 주고 **최종 확인을 한 번** 받습니다. 그 문장을 `change approve --note`로 넘깁니다. 작업 전 요청 원문을 최종 확인으로 재사용하지 않습니다(엔진이 거부).
+7. 완료 보고: 기존 승인 revision이 그대로이고 패치(AMD-n)가 추가됐다는 것, /product-build에서는 영향 화면 배치만 재검증 대상이라는 것을 알립니다. 커밋은 사용자가 합니다.
+- 진행 중 CR이 있으면 영향 화면의 구현 배치 검증·승인이 막히고, 단계 `reopen`도 막힙니다. 체인 문제(`amendment_chain_broken`)는 자동으로 고치지 않고 보고합니다.
+- 기능 켜기는 사용자 동의 후 `change enable`(계획) → `--confirm --note "<사용자 문장>"`입니다. 켜지 않은 프로젝트는 기존 5단계 흐름 그대로입니다.
 
 ## 6단계 — 완료 보고
 

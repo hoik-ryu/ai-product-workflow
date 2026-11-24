@@ -203,16 +203,39 @@ def front_matter_revision(text: str) -> int | None:
 
 
 # ---------------------------------------------------------------- 상태 파일
+_LOADED: dict[int, tuple[str, str]] = {}  # id(상태 객체) → (상태 파일 경로, 읽을 때 바이트 sha256). 저장 직전 동시 변경 감지용
+
+
+class _DuplicateKey(ValueError):
+    pass
+
+
+def _no_duplicate_keys(pairs):
+    """같은 객체 안의 중복 키(예: 서로 다른 Worktree에서 만든 CR-001을 손으로 병합)를 조용히 덮어쓰지 않고 거부합니다."""
+    out = {}
+    for k, v in pairs:
+        if k in out:
+            raise _DuplicateKey(k)
+        out[k] = v
+    return out
+
+
 def load_state(project: Path) -> dict | None:
     p = project / STATE_REL
     if not p.exists():
         return None
+    raw = p.read_bytes()
     try:
-        st = json.loads(p.read_text(encoding="utf-8"))
+        st = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except _DuplicateKey as e:
+        block("state_duplicate_keys", f"{STATE_REL}에 같은 키({e})가 두 번 있습니다(병합 충돌을 손으로 합친 흔적일 수 있음). "
+              "어느 쪽도 자동으로 고르지 않습니다. Git 이력에서 한쪽 기준으로 복원한 뒤 다른 쪽 변경을 다시 진행하세요.", key=str(e))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        block("state_unreadable", f"{STATE_REL}을 읽을 수 없습니다: {e}")
+        hint = " 병합 충돌 표시(<<<<<<<)가 남아 있습니다." if b"<<<<<<<" in raw else ""
+        block("state_unreadable", f"{STATE_REL}을 읽을 수 없습니다: {e}.{hint} 자동으로 고치지 않습니다.")
     if not isinstance(st, dict) or not isinstance(st.get("stages", {}), dict):
         block("state_unreadable", f"{STATE_REL}의 최상위 형식이 올바르지 않습니다(객체여야 하고 stages도 객체). 자동으로 고치지 않습니다. Git 이력에서 복원하세요.")
+    _LOADED[id(st)] = (str(p), sha256_bytes(raw))
     return st
 
 
@@ -227,15 +250,59 @@ def require_state(project: Path) -> dict:
     return st
 
 
+LOCK_REL = ".ai-workflow/.design.lock"
+
+
+class state_lock:
+    """design.json 쓰기 잠금(O_EXCL). 같은 컴퓨터의 다른 프로세스가 동시에 쓰지 못하게 합니다.
+    잠금을 만든 프로세스가 이미 끝났으면(pid 없음) 남은 잠금으로 보고 정리합니다. 살아 있는 프로세스의 잠금은 지우지 않습니다.
+    서로 다른 Git Worktree는 각자 파일을 가지므로 이 잠금으로 막을 수 없습니다(병합 시 load_state·체인 검사가 충돌을 감지)."""
+
+    def __init__(self, project: Path):
+        self.path = project / LOCK_REL
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(os.getpid()).encode())
+                os.close(fd)
+                return self
+            except FileExistsError:
+                try:
+                    pid = int(self.path.read_text().strip() or "0")
+                    os.kill(pid, 0)
+                except (ValueError, ProcessLookupError, FileNotFoundError):
+                    self.path.unlink(missing_ok=True)  # 끝난 프로세스가 남긴 잠금
+                    continue
+                except PermissionError:
+                    pass
+                block("state_locked", f"다른 프로세스(pid {pid})가 {STATE_REL}을 쓰는 중입니다. 끝난 뒤 다시 실행하세요. 자동으로 잠금을 지우지 않습니다.",
+                      lock=LOCK_REL)
+        block("state_locked", f"{LOCK_REL} 잠금을 얻지 못했습니다.", lock=LOCK_REL)
+
+    def __exit__(self, *exc):
+        self.path.unlink(missing_ok=True)
+        return False
+
+
 def save_state(project: Path, st: dict) -> None:
     st["updated_at"] = now()
     p = project / STATE_REL
     p.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".design.", suffix=".tmp")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(st, f, ensure_ascii=False, indent=2)
-        f.write("\n")
-    os.replace(tmp, p)
+    with state_lock(project):
+        seen = _LOADED.get(id(st))
+        if seen and seen[0] == str(p):
+            cur = sha256_bytes(p.read_bytes()) if p.exists() else None
+            if cur != seen[1]:  # 읽은 뒤 다른 프로세스가 바꿈: 덮어쓰면 그 변경이 사라짐
+                block("state_conflict", f"이 명령이 {STATE_REL}을 읽은 뒤 다른 명령이 파일을 바꿨습니다. 덮어쓰지 않았습니다. 다시 실행하세요.")
+        data = (json.dumps(st, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=".design.", suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, p)
+        _LOADED[id(st)] = (str(p), sha256_bytes(data))
 
 
 def add_history(st: dict, stage: str, event: str, revision: int | None = None, note: str = "") -> None:
@@ -964,9 +1031,20 @@ def preview_record_changes(project: Path, st: dict, record: dict, kind: str) -> 
 
 
 def cross_verify(project: Path, st: dict) -> dict:
+    import pd_change as CH  # 유효 승인 기준(승인 기록 + 승인 패치 체인)의 단일 구현
     problems: list[dict] = []
     warnings: list[str] = []
     v2 = workflow_of(st) == "v2"
+    eff = CH.effective(st)
+    if not eff["ok"]:
+        problems.append({"stage": "design", "kind": "amendment_chain_broken", "paths": [STATE_REL], "errors": eff["errors"],
+                         "message": "승인 패치 체인에 문제가 있습니다(삭제·순서 변경·위조·기준 불일치). 이전 기준으로 조용히 되돌아가지 않고 차단합니다."})
+        for k, s_ in st["stages"].items():
+            if s_.get("status") == "approved":
+                problems.append({"stage": k, "kind": "amendment_chain_broken", "paths": [STATE_REL]})
+
+    def eff_rec(stage: str, s_: dict) -> dict:
+        return eff["records"].get(stage) or s_["approved"]
     for stage in stage_list(st):
         s = st["stages"][stage]
         if stage not in IMPLEMENTED_STAGES:
@@ -982,7 +1060,7 @@ def cross_verify(project: Path, st: dict) -> dict:
         cur = stage_current_hashes(project, stage)
         if v2 and stage == "preview" and s["status"] in ("approved", "awaiting_approval"):
             kind = "approved" if s["status"] == "approved" else "submitted"
-            changed, theme_changed, impl_only = preview_record_changes(project, st, s[kind], kind)
+            changed, theme_changed, impl_only = preview_record_changes(project, st, eff_rec(stage, s) if kind == "approved" else s[kind], kind)
             if changed:
                 problems.append({"stage": stage, "kind": f"{kind}_modified", "paths": changed})
             if theme_changed:
@@ -992,11 +1070,11 @@ def cross_verify(project: Path, st: dict) -> dict:
                 warnings.append("프리뷰에서 주석·공백·문서만 바뀌었습니다(구현 메모). v2 규칙상 재승인이 필요하지 않습니다.")
             continue
         if s["status"] == "approved":
-            changed = diff_hashes(s["approved"]["hashes"], cur)
+            changed = diff_hashes(eff_rec(stage, s)["hashes"], cur)
             if changed:
                 problems.append({"stage": stage, "kind": "approved_modified", "paths": changed})
             if stage == "design_direction":
-                _dd_asset_verify(project, st, s["approved"], problems, warnings)
+                _dd_asset_verify(project, st, eff_rec(stage, s), problems, warnings)
         elif s["status"] == "awaiting_approval":
             changed = diff_hashes(s["submitted"]["hashes"], cur)
             if changed:
@@ -1035,6 +1113,8 @@ def cross_verify(project: Path, st: dict) -> dict:
             rel = str(p.relative_to(project))
             if p.is_file() and rel not in known and p.name != ".DS_Store":
                 warnings.append(f"{rel}: /product-design이 관리하지 않는 파일입니다")
+    if eff["ok"]:
+        problems = CH.pending_problems(project, st, problems)
     return {"consistent": not problems, "problems": problems, "warnings": warnings}
 
 
@@ -1429,6 +1509,7 @@ def _preserved(orig: dict, new: dict) -> list[str]:
 
 __all__ = [
     'ALL_STAGES',
+    'preview_build',
     'CLEAN_CHECK_IGNORED_PREFIXES',
     'CONFIRMED_RE',
     'CR_CATEGORIES',
@@ -1582,6 +1663,27 @@ def _dd_asset_verify(project: Path, st: dict, rec: dict, problems: list, warning
                          "paths": [rec["assets"][a]["file"] for a in drift],
                          "message": f"승인된 자산 {', '.join(drift)}의 파일·레지스트리 항목·권리 확인 기록이 승인 스냅샷과 다릅니다. "
                                     "승인 당시 자산으로 복원하거나 reopen --stage design_direction 후 재승인합니다."})
+
+
+def preview_build(project: Path, timeout: int = 600) -> dict:
+    """프리뷰 빌드(pnpm install + pnpm run build). preview-verify와 change verify가 같은 명령을 씁니다."""
+    root = project / PREVIEW_DIR
+    lock = (root / "pnpm-lock.yaml").exists()
+    cmds = [["pnpm", "install", "--frozen-lockfile"] if lock else ["pnpm", "install"], ["pnpm", "run", "build"]]
+    steps, result = [], "pass"
+    for cmd in cmds:
+        try:
+            p = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=timeout)
+            rc, out = p.returncode, (p.stdout + p.stderr)
+        except FileNotFoundError:
+            rc, out = 127, "pnpm을 찾을 수 없습니다."
+        except subprocess.TimeoutExpired:
+            rc, out = 124, "시간 초과"
+        steps.append({"run": " ".join(cmd), "exit": rc, "tail": out.strip().splitlines()[-15:]})
+        if rc != 0:
+            result = "fail"
+            break
+    return {"result": result, "steps": steps}
 
 
 class rollback_on_failure:
