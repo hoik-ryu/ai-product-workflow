@@ -63,8 +63,8 @@ import pd_assets as PA  # noqa: E402  (EX5.1 시각 자산 계약)
 import pd_quality as QL  # noqa: E402  (EX5.1 시각 품질 평가 계약)
 import pd_render as RDR  # noqa: E402  (EX7 렌더러 공통 계약·Figma 선택 연동)
 import pd_reference as RF  # noqa: E402  (레퍼런스 기반 탐색 EX3: §2.12)
-import pd_temp as TP  # noqa: E402
-import pd_change as CH  # noqa: E402  (변경 요청·승인 패치 M1: reference/change-request.md)  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
+import pd_temp as TP  # noqa: E402  (TEMP 산출물 저장소 밖 실행 폴더: docs/policies/artifact-retention.md)
+import pd_change as CH  # noqa: E402  (변경 요청·승인 패치 M1: reference/change-request.md)
 
 
 def annotate_problems(project: Path, st: dict, cv: dict) -> None:

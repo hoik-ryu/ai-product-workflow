@@ -37,6 +37,7 @@
 | Preview Review 캡처 | **엔진 경로 없음** → 에이전트가 `design-explore/review/**` 등에 임의 생성 | TEMP(06이 인용한 파일만 B) | **규칙 없음 ← 파일 증가의 주원인** |
 | 브라우저 검증(build) | `.ai-workflow/build/evidence/<B>/runs/<run>/reports/` (`PB_REPORT_DIR`), `attempts/*.log` | TEMP(요약·해시는 build.json에 기록) | `.ai-workflow/build/.gitignore`(엔진 생성) |
 | UI 검토 묶음 | `.ai-workflow/build/ui/<B>/brief.json`·`plan.json`·`review.json` | B | 추적 |
+| 화면 검증(변경 요청 M1) | `.ai-workflow/changes/<CR>/runs/<run>/`(report.json·measure-spec.json·shots/) | TEMP(run_id·리포트·명세 sha256·판정은 design.json의 CR 검증 기록과 패치에 기록) | 권장 `.gitignore`(`gitignore.recommended`). 엔진은 이 폴더의 `.gitignore`를 만들지 않음 |
 | E2E·시각 회귀 도구 기본 출력 | `test-results/`, `playwright-report/` 등 (프로젝트 도구) | TEMP | 프로젝트마다 다름 |
 | 시각 회귀 기준 스냅샷 | `*-snapshots/` 등 (프로젝트 테스트) | B(테스트 기준) | 추적 |
 | 엔진 내부 임시 | `tempfile.mkdtemp`(UI 피드백 요청 등) | TEMP | 저장소 밖(실행 후 삭제) |

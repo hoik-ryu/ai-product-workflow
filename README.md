@@ -29,9 +29,10 @@ skills/product-init/
   templates/               boilerplate.manifest.example.toml
 skills/product-design/
   SKILL.md                 진입점(UX Planning → UX 설계 → UI 프리뷰 → 승인)
-  reference/               design-state, ux-planning, ux-spec, review-checklist, preview
+  reference/               design-state, ux-planning, ux-spec, review-checklist, preview, change-impact, change-request(변경 요청·승인 패치 M1)
   scripts/product_design.py  결정적 보조 스크립트 진입점(CLI, Python 3.11+, 표준 라이브러리만)
   scripts/pd_core.py · pd_theme.py · pd_impact.py  공통(상태·승인·해시·검증) · 테마·렌더러·프리뷰 계약 · 변경 영향 분류
+  scripts/pd_change.py · pd_pixel.py · pd_screens.py  변경 요청(A–E 분류·Type B 패치 체인·유효 승인 기준) · PNG 전후 비교 · 영향 화면 실제 브라우저 검증
   templates/               00-ux-decisions … 06-preview-review, preview/(Vite+React 프리뷰 앱)
 skills/product-build/
   SKILL.md                 진입점(범위 → 계획 초안 → 검증 → (preview waiver) → 계획 승인, adopt 분석)
@@ -42,6 +43,7 @@ skills/product-build/
 docs/architecture.md       설계
 docs/policies/artifact-retention.md  산출물 분류(PRODUCT·APPROVAL·TEMP)·TEMP 경로(temp-dir)·정리 정책
 docs/policies/gitignore.recommended  제품 저장소 .gitignore에 덧붙이는 권장 블록(덮어쓰기 없음)
+docs/roadmap/m1-change-request-adoption.md  기존 프로젝트에 변경 요청 M1 적용·활성화·측정 어댑터 재확인·복원 절차
 tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
 tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
 tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
@@ -51,6 +53,9 @@ tests/product_design_impact_test.py /product-design 디자인 변경 영향 분�
 tests/product_design_v2_test.py /product-design 워크플로 v2 상태·전환·무효화 테스트
 tests/product_design_dd_test.py /product-design Design Direction 단계·게이트·의미 해시 테스트
 tests/product_design_theme_test.py /product-design 테마 계약·렌더러 경로 테스트(PD_FULL=1이면 프리뷰 빌드·승인 포함)
+tests/product_design_change_test.py /product-design 변경 요청 M1(분류·Type B·체인 무결성·동시성·Worktree 충돌) 테스트(pnpm·Chrome 필요)
+tests/product_design_change_generality_test.py Type B 범용성·영향 화면 실측·사용자 개입 횟수 테스트(독립 픽스처)
+tests/product_build_change_test.py /product-build ↔ 변경 요청 연동(패치 후 계획 유지·영향 배치 재검증·진행 중 CR 차단) 테스트
 tests/build-scenarios.md   /product-build 테스트 시나리오와 실행 기록
 tests/product_build_test.py /product-build 스크립트 테스트(자체 완결형, 가상 제품 2종)
 tests/product_build_smapsh_check.py 실제 프로젝트 복제본 적용 확인(원본 경로는 거부)
@@ -63,7 +68,7 @@ tests/product_build_smapsh_m24_check.py M2.4를 실제 프로젝트 복제본(vi
 tests/product_build_ledger_test.py /product-build 정책·편차 원장·decide·문서 반영 대기열 테스트(M2.4b)
 tests/product_build_smapsh_ledger_check.py 원장 시범 등록을 실제 프로젝트 복제본에서 확인(fixtures/smapsh-policies.json)
 tests/engine_baseline.py   회귀 비교용 고정 기준 엔진 추출(v1 엔진 b83907b, scripts 디렉터리 전체)
-tests/fixtures/           테스트 고정 사례(디자인 변경 분류 D1–D15, SMAPSH 실제 배치 비교 기준)
+tests/fixtures/           테스트 고정 사례(디자인 변경 분류 D1–D15, 변경 유형 A–E 정답 사례, SMAPSH 실제 배치 비교 기준)
 tests/harness/            LLM 회귀 하네스(/product-start S01–S19, /product-init K1–K10)와 자동 판정기
 ```
 

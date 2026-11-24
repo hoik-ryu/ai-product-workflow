@@ -26,6 +26,7 @@ from pd_core import (
     STATE_REL,
 )
 import pd_pixel as PX
+from pd_assets import _entry_sha as entry_sha, registry_rel  # 자산 레지스트리 경로·항목 지문은 pd_assets 정의를 그대로 씀
 
 TYPES = ("A", "B", "C", "D", "E")
 RANK = {t: i for i, t in enumerate(TYPES)}
@@ -35,7 +36,6 @@ ACTIVE = ("open", "in_progress", "verified", "awaiting_confirmation", "escalated
 M1_EXECUTABLE = ("B",)
 IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp", ".svg", ".gif")
 CODE_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".css", ".html", ".json")
-REGISTRY_DEFAULT = "design-profile/assets.json"
 ASSET_META_KEYS = ("kind", "role", "source", "refs", "depicts", "fallback", "format")
 PLANNING_REF_RE = r"\b(?:US|AC|FR|NFR)-\d{3}\b|\bFLOW-\d{3}|\bC-\d{2}\b"
 E_KINDS = ("permission", "flow", "acceptance", "data_policy", "feature", "behavior")
@@ -162,10 +162,6 @@ def effective_record(st: dict, stage: str, eff: dict | None = None) -> dict | No
 
 
 # ================================================================ 산출물 스냅샷·파일 차이
-def registry_rel(st: dict) -> str:
-    return (((st.get("config") or {}).get("exploration") or {}).get("assets_file")) or REGISTRY_DEFAULT
-
-
 def load_registry(project: Path, st: dict) -> dict:
     p = project / registry_rel(st)
     try:
@@ -173,10 +169,6 @@ def load_registry(project: Path, st: dict) -> dict:
     except (OSError, json.JSONDecodeError):
         return {}
     return d.get("assets") if isinstance(d, dict) and isinstance(d.get("assets"), dict) else {}
-
-
-def entry_sha(entry: dict) -> str:
-    return hashlib.sha256(json.dumps(entry, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def artifact_files(project: Path, st: dict) -> dict:

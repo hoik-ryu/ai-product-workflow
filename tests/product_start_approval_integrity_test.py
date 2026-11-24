@@ -211,8 +211,7 @@ def main() -> int:
 
         # ---- 수정 요청(T3) 뒤 남은 이전 스냅샷: 재사용 금지·재제출 시 교체
         t3 = submitted_project(root, "t3")
-        edit(t3, r"(  planning:\n    status:) awaiting_approval", r"\1 in_progress")
-        ps(t3, "event", "--stage", "planning", "--event", "changes_requested", "--revision", "1", "--note", "수정 요청")
+        assert ps(t3, "request-changes", "--stage", "planning", "--revision", "1", "--note", "수정 요청")[0] == 0  # T3 전용 전이(상태 직접 편집 없음)
         code, chk = ps(t3, "check")
         check("V18 T3 후 남은 이전 스냅샷은 경고(승인에 쓰이지 않음)", code == 0 and any("이전 제출 스냅샷(r1)" in w for w in chk["warnings"]), chk)
         tamper = root / "tamper"

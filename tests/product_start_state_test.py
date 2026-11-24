@@ -147,9 +147,9 @@ def main() -> int:
         code, out = ps(e, "check")
         check("S15 기존 항목(src 없음)은 legacy로 세고 문제 아님, 파일은 바뀌지 않음", code == 0 and out["legacy"] == 1
               and (e / ".ai-workflow/state.yaml").read_bytes() == raw, out)
-        ps(e, "event", "--stage", "discovery", "--event", "changes_requested", "--revision", "0")
+        ps(e, "event", "--stage", "discovery", "--event", "generated", "--revision", "0")
         t = (e / ".ai-workflow/state.yaml").read_text(encoding="utf-8")
-        check("S16 기존 항목 뒤에 새 항목 추가(기존 줄 보존)", 'note: "old" }' in t and t.index('note: "old"') < t.index("event: changes_requested"), t[-300:])
+        check("S16 기존 항목 뒤에 새 항목 추가(기존 줄 보존)", 'note: "old" }' in t and t.index('note: "old"') < t.index("event: generated, revision: 0"), t[-300:])
         bad = t.replace('  - { at: "2026-01-01T00:00:00Z"', '  - { at: "2099-01-01T00:00:00Z"')
         (e / ".ai-workflow/state.yaml").write_text(bad, encoding="utf-8")
         code, out = ps(e, "check")

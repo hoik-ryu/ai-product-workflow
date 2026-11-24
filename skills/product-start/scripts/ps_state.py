@@ -6,6 +6,8 @@ D-001: LLM이 history·승인 시각을 추측해 쓰지 않도록, 시각이 �
 - `event`: history에 전이 항목 하나 추가(시각은 스크립트가 정함)
 - `approve`: 명시적 승인 전이(T4 discovery·T8 planning) — 제출 스냅샷과 현재 문서 비교(다르면 `changed_since_submission`), 산출물 해시 계산, approved.{revision, at, hashes}, 스냅샷 비움, 상태·잠금 해제, history `approved`
 - `reopen`: 승인된 planning을 다시 엶(T9, `--confirm` 필수) — 승인 기록 검증, approved 초기화(이전 승인은 history에 보존), design 잠금, history `reopened`
+- `request-changes`: 승인 대기 중인 discovery·planning에 사용자가 수정을 요청함(T3) — revision 검증, awaiting_approval → in_progress,
+  history `changes_requested`(사용자 요청 원문), 승인 기록·제출 스냅샷·revision 보존. 상태 파일 직접 편집 없이 한 번에 원자적으로 기록
 - `submit`: discovery 제출(T2)·planning 제출(T6), `--confirm` 필수. discovery는 revision·front matter 검증, awaiting_approval, 제출 스냅샷, history `submitted`. planning — 다음 revision·front matter·discovery 기준 검증, awaiting_approval, artifacts_done 비움, 제출 스냅샷(submitted.{revision, at, hashes}) 기록, 추적성 보고, history `submitted`
 - `migrate-snapshot`: 스냅샷 도입 이전에 제출된 planning에 스냅샷을 기록(`--confirm` 필수, history의 제출 해시와 일치할 때만)
 - `check`: 읽기 전용. history·승인 시각이 형식에 맞고 미래가 아니며 순서가 맞는지, 승인 대기 문서가 제출 이후 바뀌지 않았는지 검사(기존 기록은 고치지 않음)
@@ -168,7 +170,9 @@ def history_items(lines: list[str]) -> list[dict]:
         if re.match(r"^  - ", l):
             at = re.search(r"\bat:[ \t]*\"?([^\",}]*)\"?", l)
             out.append({"line": j + 1, "at": at.group(1).strip() if at else None, "engine": bool(re.search(r"\bsrc:[ \t]*engine\b", l)),
-                        "event": (re.search(r"\bevent:[ \t]*([\w]+)", l) or [None, None])[1]})
+                        "event": (re.search(r"\bevent:[ \t]*([\w]+)", l) or [None, None])[1],
+                        "stage": (re.search(r"\bstage:[ \t]*([\w]+)", l) or [None, None])[1],
+                        "revision": (re.search(r"\brevision:[ \t]*(\d+)", l) or [None, None])[1]})
     return out
 
 
@@ -193,6 +197,9 @@ def cmd_event(a) -> None:
         raise Blocked("use_reopen", "planning 재개(T9)는 reopen --confirm 명령으로 합니다(승인 기록 검증·초기화·design 잠금을 함께 처리).")
     if a.stage == "planning" and a.event == "submitted":
         raise Blocked("use_submit", "planning 제출(T6)은 submit --confirm 명령으로 합니다(revision·front matter·discovery 기준 검증과 상태 전환을 함께 처리).")
+    if a.stage in ("discovery", "planning") and a.event == "changes_requested":
+        raise Blocked("use_request_changes", f"{a.stage} 수정 요청(T3)은 request-changes 명령으로 합니다(상태 전이·revision 검증·요청 원문 기록을 함께 처리, "
+                      "state.yaml 직접 편집 불필요).")
     if a.stage == "discovery" and a.event == "submitted":
         raise Blocked("use_submit", "discovery 제출(T2)은 submit --stage discovery --confirm 명령으로 합니다(revision·front matter 검증, 상태 전환, 제출 스냅샷을 함께 처리).")
     fd = lock(project)
@@ -488,6 +495,85 @@ def cmd_reopen(a) -> None:
           "note": "이전 승인 기록은 history의 approved·reopened 항목(해시 앞 8자)과 Git 이력에 남습니다. 해시를 다시 계산해 기록하지 않았습니다. "
                   "수정 후 T6(revision+1 제출)·T8(approve)로 다시 승인받아야 합니다. design.json은 이 스크립트가 바꾸지 않으며, "
                   "재승인 후 내용이 바뀌었으면 /product-design check가 outdated를 감지합니다(impact → rebase)."})
+
+
+def cmd_request_changes(a) -> None:
+    """T3: 승인 대기(awaiting_approval) 중인 discovery·planning에 사용자가 수정을 요청했을 때 in_progress로 되돌립니다.
+    상태 전이와 history `changes_requested`(사용자 요청 원문)를 메모리에서 함께 만든 뒤 한 번에 원자적으로 씁니다.
+    승인 기록(approved)·제출 스냅샷(submitted)·revision은 바꾸지 않습니다(다음 submit이 revision+1로 새 스냅샷을 씀).
+    승인(approve)·승인 후 재개(reopen, T9)와 다릅니다: 아직 승인되지 않은 제출본을 고치는 전이입니다."""
+    project = Path(a.project).resolve()
+    if a.stage not in ("discovery", "planning"):
+        raise Blocked("unsupported_stage", "request-changes는 discovery·planning의 T3만 지원합니다(디자인·구현은 각 Skill의 reopen 명령).")
+    note = (a.note or "").strip()
+    if not note:
+        raise Blocked("request_statement_required", "수정 요청은 사용자가 이번 대화에서 한 수정 요청 원문이 필요합니다(--note). "
+                      "사용자가 수정을 요청하지 않았으면 실행하지 않습니다(승인·보류와 구분).")
+    fd = lock(project)
+    try:
+        lines = read_lines(project)
+        orig = list(lines)
+        wf = get_scalar(lines, 0, len(lines), "workflow", 0)
+        if wf != "ai-product-workflow":
+            raise Blocked("not_workflow_state", f"{STATE_REL}의 workflow 값이 ai-product-workflow가 아닙니다({wf}). 다른 프로젝트의 상태 파일일 수 있어 바꾸지 않습니다.")
+        st = a.stage
+        s, e = stage_span(lines, st)
+        status, rev = get_scalar(lines, s, e, "status"), get_scalar(lines, s, e, "revision")
+        if status != "awaiting_approval":
+            last = [h for h in history_items(lines) if h.get("stage") == st][-1:]
+            if status == "in_progress" and last and last[0].get("event") == "changes_requested" and str(last[0].get("revision")) == str(a.revision):
+                raise Blocked("already_requested", f"{st} r{a.revision}에 대한 수정 요청이 이미 기록되어 있습니다(중복 실행). 상태는 그대로 in_progress입니다. "
+                              f"수정 후 submit --revision {int(rev) + 1 if (rev or '').isdigit() else '<현재+1>'}로 다시 제출합니다.")
+            raise Blocked("not_awaiting_approval", f"{st} 상태가 {status}입니다. 승인 대기(awaiting_approval)인 제출본에만 수정 요청(T3)을 기록합니다"
+                          + ("(승인된 planning을 바꾸려면 reopen, T9)." if status == "approved" else "."))
+        if not (rev or "").isdigit() or a.revision != int(rev):
+            raise Blocked("revision_mismatch", f"수정 요청 대상 revision({a.revision})이 승인 대기 중인 revision({rev})과 다릅니다. 방금 제시한 revision을 확인하세요.")
+        snap = read_snapshot(lines, s, e)
+        if snap is not None and snap.get("revision") != rev:
+            raise Blocked("state_inconsistent", f"제출 스냅샷 revision({snap.get('revision')})이 승인 대기 revision({rev})과 다릅니다. 상태 파일을 고치지 않았습니다.")
+        k, end = approved_block(lines, s, e)
+        rec_before = approved_record(lines, k, end)
+        if st == "planning":
+            gs, ge = stage_span(lines, "design")
+            if get_scalar(lines, gs, ge, "status") != "locked":
+                raise Blocked("state_inconsistent", f"planning 승인 대기인데 design이 {get_scalar(lines, gs, ge, 'status')}입니다(locked여야 함).")
+
+        # ---- 메모리에서 전이 적용(디스크는 아직 그대로)
+        at = now()
+        set_scalar(lines, s, e, "status", "in_progress")
+        short = " ".join(f"{Path(f).name.split('-')[0]}={h[:8]}…" for f, h in (snap or {}).get("hashes", {}).items()) or "스냅샷 없음(이전 방식 제출)"
+        hist_note = f"T3 수정 요청(r{rev} 미승인 제출본): {note} | 제출 해시 {short}"
+        append_history(lines, history_entry(st, "changes_requested", int(rev), hist_note, at))
+        if getattr(a, "simulate_failure", False):
+            raise RuntimeError("simulated failure before write")
+
+        # ---- 쓰기 전 사후 조건: 바뀐 것은 이 단계의 status 한 줄과 history 한 줄뿐이어야 함(나머지는 원본과 같음)
+        entry = history_entry(st, "changes_requested", int(rev), hist_note, at)
+        back = list(lines)
+        back.remove(entry)
+        si = next(i for i in range(s, e) if re.match(r"^    status:", back[i]))
+        back[si] = orig[si]
+        norm = lambda ls: ["history:" if re.match(r"^history:[ \t]*\[\][ \t]*(#.*)?$", l) else l for l in ls]  # noqa: E731
+        ns, ne = stage_span(lines, st)
+        nk, nend = approved_block(lines, ns, ne)
+        post = [
+            get_scalar(lines, ns, ne, "status") == "in_progress",
+            get_scalar(lines, ns, ne, "revision") == rev,
+            approved_record(lines, nk, nend) == rec_before,
+            read_snapshot(lines, ns, ne) == snap,
+            len(history_items(lines)) == len(history_items(orig)) + 1,
+            norm(back) == norm(orig),
+        ]
+        if not all(post):
+            raise Blocked("postcondition_failed", "전이 결과가 예상과 달라 쓰지 않았습니다(state.yaml 그대로). 상태 파일 형식을 확인하세요.", checks=post)
+        write_lines(project, lines)
+    finally:
+        if fd is not None:
+            os.close(fd)
+    emit({"ok": True, "stage": st, "status": "in_progress", "revision": int(rev), "preparing_revision": int(rev) + 1, "requested_at": at,
+          "preserved": {"approved": rec_before, "submitted_snapshot": {k_: v for k_, v in (snap or {}).items() if k_ != "hashes"} or None},
+          "next": (f"사용자 요청을 반영해 문서를 고친 뒤 front matter revision을 {int(rev) + 1}로 올리고 "
+                   f"submit --stage {st} --revision {int(rev) + 1} --confirm으로 다시 제출합니다. 이전 제출 스냅샷은 승인에 쓰이지 않고 재제출 때 교체됩니다.")})
 
 
 ID_KINDS = ("FR", "NFR", "US", "FLOW", "AC")
@@ -836,18 +922,23 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("now"); s.set_defaults(fn=cmd_now)
     for name, fn in (("event", cmd_event), ("approve", cmd_approve), ("reopen", cmd_reopen), ("submit", cmd_submit), ("check", cmd_check),
-                     ("migrate-snapshot", cmd_migrate_snapshot)):
-        s = sub.add_parser(name)
+                     ("migrate-snapshot", cmd_migrate_snapshot), ("request-changes", cmd_request_changes)):
+        s = sub.add_parser(name, help={
+            "event": "history 항목 기록(전용 명령이 있는 전이는 거부)", "approve": "명시적 승인(T4·T8)", "reopen": "승인된 planning 재개(T9)",
+            "submit": "제출(T2·T6)", "check": "읽기 전용 점검", "migrate-snapshot": "이전 방식 제출의 스냅샷 기록",
+            "request-changes": "승인 대기 중인 discovery·planning에 사용자 수정 요청 기록(T3): awaiting_approval → in_progress"}[name])
         s.add_argument("--project", required=True)
         s.set_defaults(fn=fn)
-        if name in ("event", "approve", "reopen", "submit", "migrate-snapshot"):
+        if name in ("event", "approve", "reopen", "submit", "migrate-snapshot", "request-changes"):
             s.add_argument("--stage", required=True)
-            s.add_argument("--note", default="")
+            s.add_argument("--note", default="", help=("사용자 수정 요청 원문(필수)" if name == "request-changes" else None))
         if name == "event":
             s.add_argument("--event", required=True)
             s.add_argument("--revision", type=int, required=True)
-        if name in ("approve", "reopen", "submit", "migrate-snapshot"):
+        if name in ("approve", "reopen", "submit", "migrate-snapshot", "request-changes"):
             s.add_argument("--revision", type=int, required=True)
+        if name == "request-changes":
+            s.add_argument("--simulate-failure", action="store_true", help=argparse.SUPPRESS)
         if name == "migrate-snapshot":
             s.add_argument("--confirm", action="store_true", help="사용자가 마이그레이션을 승인했을 때만")
         if name == "reopen":

@@ -27,7 +27,7 @@ disable-model-invocation: true
 
 ## 반드시 지킬 규칙
 
-0. **시각과 승인 기록은 직접 쓰지 않습니다.** history 항목, `approved.at`, 승인 해시는 `scripts/ps_state.py`가 실제 시스템 UTC 시각과 파일 내용으로 기록합니다. 시각을 추측하거나 손으로 적지 않습니다(`created_at`도 `ps_state.py now` 값). 상태·revision 등 시각이 없는 값만 직접 고칩니다.
+0. **시각과 승인 기록은 직접 쓰지 않습니다.** history 항목, `approved.at`, 승인 해시는 `scripts/ps_state.py`가 실제 시스템 UTC 시각과 파일 내용으로 기록합니다. 시각을 추측하거나 손으로 적지 않습니다(`created_at`도 `ps_state.py now` 값). 제출(T2·T6 `submit`)·수정 요청(T3 `request-changes`)·승인(T4·T8 `approve`)·재개(T9 `reopen`)는 전용 명령으로만 기록하고 state.yaml을 직접 고치지 않습니다. 상태 파일을 직접 고치는 것은 전용 명령이 없는 전이(T1 생성, T5 planning 생성·`artifacts_done`, T7 discovery 재개)의 시각 없는 값뿐입니다.
 
 1. **게이트**: discovery가 `approved`가 되기 전에는 planning 문서(02–05)를 생성하거나 작성하지 않습니다. "파일에 초안만 쓰는 것"도 포함합니다. planning이 `approved`가 되기 전에는 마일스톤 완료로 처리하지 않습니다.
 2. **명시적 승인만 인정**합니다. 기준은 `state-machine.md`에 따릅니다. 애매한 응답은 다시 묻습니다. 수정 요청은 항상 새 revision과 새 승인으로 이어집니다.
@@ -91,7 +91,7 @@ disable-model-invocation: true
 그리고 멈춰서 기다립니다.
 
 - 명시적 승인 → `ps_state.py approve --project . --stage discovery --revision <제시한 N> --note "<승인 요지>"`를 실행합니다. 스크립트가 해시·`approved.{revision, at, hashes}`·상태(`approved`)·planning 잠금 해제(`locked` → `not_started`, `outdated`면 유지)·history `approved`를 기록합니다. 거부되면(revision·front matter 불일치 등) 그 이유를 보고하고 멈춥니다. 4단계로 이동합니다.
-- 수정 요청 → Q/ASM에 대한 답은 `discovery-notes.md`에 기록합니다. 상태를 `in_progress`로 바꾸고 `ps_state.py event --stage discovery --event changes_requested --revision <N> --note "<요청 요약>"`으로 기록합니다. 2단계 3번(수정 → 확인 → 재제출)으로 이동합니다.
+- 수정 요청 → Q/ASM에 대한 답은 `discovery-notes.md`에 기록합니다. `ps_state.py request-changes --project . --stage discovery --revision <제시한 N> --note "<사용자 수정 요청 원문>"`을 실행합니다(T3). 스크립트가 상태·revision을 검증하고 `awaiting_approval` → `in_progress` 전이와 history `changes_requested`(요청 원문)를 한 번에 기록하며, 제출 스냅샷·revision은 보존합니다. state.yaml을 직접 고치거나 `event --event changes_requested`로 대신하지 않습니다(거부됨). 거부되면 이유를 보고하고 멈춥니다. 2단계 3번(수정 → 확인 → 재제출)으로 이동합니다.
 - 애매한 응답 → 다시 묻고, 아무것도 바꾸지 않습니다.
 
 ## 4단계 — Planning 문서 생성
@@ -108,7 +108,7 @@ disable-model-invocation: true
 제시할 내용: 개수(FR/NFR/US/FLOW/AC), Must FR 목록, Planning 중 새로 생긴 ASM/Q, 추적성 점검 결과, 파일 경로, revision. **승인 / 수정 요청**을 묻고 멈춰서 기다립니다.
 
 - 명시적 승인 → `ps_state.py approve --project . --stage planning --revision <제시한 N> --note "<승인 요지>"`를 실행합니다. 스크립트가 제출 스냅샷과 현재 문서를 비교한 뒤 파일 4개의 해시, planning `approved`, 스냅샷 비움, design `locked` → `not_started`, `current_stage: design`, history `approved`를 기록합니다(승인된 discovery revision을 기준으로 하지 않으면 거부). 제출 이후 문서가 바뀌었으면 `changed_since_submission`으로 거부됩니다. 이때 승인하지 않고, 바뀐 파일을 보고한 뒤 수정 요청(T3)으로 다시 제출할지 제출 시점 내용으로 복원할지 묻습니다. `submission_snapshot_missing`(스냅샷 도입 이전 제출)이면 `state-machine.md`의 하위 호환 절차를 설명하고, 사용자가 승인한 경우에만 `ps_state.py migrate-snapshot --project . --stage planning --revision <N> --confirm`을 실행합니다. 6단계로 이동합니다.
-- 수정 요청 → 상태를 `in_progress`로 바꾸고 `ps_state.py event --stage planning --event changes_requested ...`로 기록합니다. 영향받는 파일과 하위 ID를 파악합니다(예: FR이 바뀌면 해당 US, FLOW, AC). 설명 → 확인 → `file-safety.md`에 따라 반영 → 추적성 재점검 → 4단계 4번의 `submit`(revision + 1) → 다시 제시합니다. Planning 파일 4개는 단계 revision을 공유합니다. 그래서 내용이 바뀌지 않는 파일도 front matter `revision`만 올라간다는 사실을 설명에 포함해야 합니다.
+- 수정 요청 → `ps_state.py request-changes --project . --stage planning --revision <제시한 N> --note "<사용자 수정 요청 원문>"`을 실행합니다(T3). 스크립트가 상태(`awaiting_approval`)·revision을 검증하고 `in_progress` 전이와 history `changes_requested`(요청 원문)를 한 번에 기록합니다. 제출 스냅샷·승인 기록·revision은 바꾸지 않습니다(다음 `submit`이 revision + 1로 새 스냅샷을 씀). state.yaml을 직접 고치거나 `event --event changes_requested`로 대신하지 않습니다(거부됨). 같은 요청을 다시 실행하면 `already_requested`(이미 작성 중)로 거부되며 상태는 그대로입니다. 사용자가 실제로 수정을 요청했을 때만 실행합니다(승인·보류·애매한 응답과 구분, 승인 후 변경은 T9 `reopen`). 그다음 영향받는 파일과 하위 ID를 파악합니다(예: FR이 바뀌면 해당 US, FLOW, AC). 설명 → 확인 → `file-safety.md`에 따라 반영 → 추적성 재점검 → 4단계 4번의 `submit`(revision + 1) → 다시 제시합니다. Planning 파일 4개는 단계 revision을 공유합니다. 그래서 내용이 바뀌지 않는 파일도 front matter `revision`만 올라간다는 사실을 설명에 포함해야 합니다.
 - 수정 요청이 실제로는 Discovery의 사실(문제, 사용자, 범위)에 관한 것이면 → Discovery를 다시 열어야 하고(T7), 그러면 planning이 `outdated`가 된다는 점을 설명하고 먼저 확인을 받습니다.
 
 ## 6단계 — Planning 승인 완료

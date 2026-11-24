@@ -46,5 +46,5 @@ stages:
     status: locked         # locked | not_started  (Milestone 2 이후. planning 승인으로만 잠금 해제)
 
 history: []
-  # 항목은 scripts/ps_state.py(event·approve)가 추가합니다(시각은 실제 시스템 UTC). 직접 쓰지 않습니다.
+  # 항목은 scripts/ps_state.py(event·submit·request-changes·approve·reopen)가 추가합니다(시각은 실제 시스템 UTC). 직접 쓰지 않습니다.
   # - { at: "", stage: discovery, event: started | submitted | changes_requested | approved | reopened | outdated | generated, revision: 0, note: "", src: engine }
