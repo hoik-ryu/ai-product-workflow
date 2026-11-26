@@ -194,6 +194,9 @@ def git_bytes(project: Path, rev: str, rel: str) -> bytes | None:
     return p.stdout if p.returncode == 0 else None
 
 
+_BACKUP_DIR: list = []  # 변경 패키지: 패키지 시작 전 미커밋 파일 보관본(기준 내용)
+
+
 def old_bytes_fn(project: Path, rev: str, base_files: dict):
     """기준 시점 파일 내용(git rev에서 읽고 기록된 sha256과 같을 때만). 확인할 수 없으면 None."""
     cache: dict[str, bytes | None] = {}
@@ -204,6 +207,8 @@ def old_bytes_fn(project: Path, rev: str, base_files: dict):
             want = base_files.get(rel) if base_files is not None else None
             if b is not None and want is not None and sha256_bytes(b) != want:
                 b = None
+            if b is None and want is not None and _BACKUP_DIR and (_BACKUP_DIR[0] / rel).is_file() and sha256_file(_BACKUP_DIR[0] / rel) == want:
+                b = (_BACKUP_DIR[0] / rel).read_bytes()  # 패키지 시작 전 미커밋 작업의 보관본
             if b is None and want is not None and (project / rel).is_file() and sha256_file(project / rel) == want:
                 b = (project / rel).read_bytes()  # 바뀌지 않은 파일은 작업 트리에서
             cache[rel] = b
@@ -890,6 +895,8 @@ def scope_paths(project: Path, st: dict, cr: dict) -> set[str]:
 def other_scopes(project: Path, st: dict, cr: dict) -> tuple[set[str], set[str]]:
     """다른 진행 중 CR이 맡은 파일·자산. 한 CR의 차이·검증 digest에서 빼서 서로 간섭하지 않게 합니다(범위는 open 때 겹치지 않음을 확인)."""
     files, assets = set(), set()
+    if cr.get("package"):  # 변경 패키지: 기획 문서·state.yaml은 패키지의 기획 단계가 소유(디자인 변경의 차이에서 뺌)
+        files |= set(PLANNING_FILES) | {WORKFLOW_STATE_REL}
     for cid, o in active_crs(st).items():
         if cid == cr.get("id"):
             continue
@@ -964,7 +971,7 @@ def rights_inheritance(project: Path, st: dict, parent: str, child: dict, child_
     p_snap = snap.get(parent)
     reg = load_registry(project, st)
     p_entry = reg.get(parent) or {}
-    crs = [c for c in active_crs(st).values() if c["type"]["selected"] == "B" and parent in ((c.get("scope") or {}).get("assets") or [])
+    crs = [c for c in active_crs(st).values() if (c["type"]["selected"] == "B" or c.get("package")) and parent in ((c.get("scope") or {}).get("assets") or [])
            and (in_place or (c.get("scope") or {}).get("successor_pending") or (c.get("scope") or {}).get("successors"))]
     if not crs:
         reasons.append(f"{parent}를 선언한 진행 중 Type B 변경 요청이 없습니다")
@@ -1050,7 +1057,7 @@ def summary(project: Path, st: dict, eff: dict | None = None) -> dict | None:
                             "files": a.get("file_transitions") or {}, "screens": a.get("screens"), "screens_known": a.get("screens") is not None,
                             "assets": sorted({x for sd in (a.get("stages") or {}).values() for x in (sd.get("assets") or {})})}
                            for a in chain],
-            "pending": [{"cr": cid, "status": c["status"], "type": c["type"]["selected"], "screens": (ps := pending_screens(project, st, c)),
+            "pending": [{"cr": cid, "status": c["status"], "type": c["type"]["selected"], "package": c.get("package"), "screens": (ps := pending_screens(project, st, c)),
                          "screens_known": ps is not None, "files": sorted(scope_paths(project, st, c)),
                          "stages": cr_stages(c)} for cid, c in active.items()]}
 
@@ -1090,6 +1097,8 @@ def cmd_change(a) -> None:
     if act in ("enable", "disable"):
         return _enable_cmd(project, st, a)
     changes_block(st)
+    if act == "package-finalize":
+        return _package_finalize_cmd(project, st, a)
     {"open": _open_cmd, "scope": _scope_cmd, "verify": _verify_cmd, "submit": _submit_cmd, "approve": _approve_cmd,
      "cancel": _cancel_cmd, "rebase": _rebase_cmd}[act](project, st, a)
 
@@ -1239,7 +1248,96 @@ def _declared_scope(project: Path, st: dict, items: list, ctx_plan: dict) -> dic
             "screens": sorted(screens) if screens is not None else None, "screens_known": screens is not None, "accepted_expansions": []}
 
 
+def _open_package_cmd(project: Path, st: dict, a) -> None:
+    """변경 패키지(/product-change) 디자인 변경 열기. 사용자 확인은 패키지 계약 승인으로 대신합니다(새 문장 없음)."""
+    from pd_core import active_package, package_contract_valid
+    eff = require_chain_ok(st)
+    pk = active_package(project)
+    if not pk or pk.get("invalid") or pk.get("id") != a.package or pk.get("status") != "executing" or not package_contract_valid(project, pk):
+        block("package_not_executing", f"계약 승인된(executing) 변경 패키지 {a.package}가 없습니다.")
+    if any(c.get("package") == a.package and c["status"] in ACTIVE for c in active_crs(st).values()):
+        block("package_cr_exists", f"{a.package}의 디자인 변경이 이미 열려 있습니다.")
+    cv = _cross_ok(project, st)
+    if [x for x in cv["problems"] if x.get("kind") != "pending_change"]:
+        block("baseline_not_clean", "디자인 파일이 유효 승인 기준과 다릅니다. 패키지 디자인 변경은 수정 전에 엽니다.", problems=cv["problems"])
+    imp = pk.get("impact") or {}
+    c = (pk.get("contract") or {}).get("scope") or {}
+    screens = sorted(set(imp.get("screens") or []) | {x.split("-ST")[0] for x in (c.get("design") or {}).get("screens") or []})
+    files = sorted(set(STAGE_ARTIFACTS["ux_planning"]) | set(SPEC_FILES) | {REVIEW_FILE, DD_FILE} | set(preview_files(project)) | {registry_rel(st)})
+    ch = st["changes"]
+    ch["seq"] = int(ch.get("seq") or 0) + 1
+    cid = f"CR-{ch['seq']:03d}"
+    if cid in ch["items"]:
+        block("cr_id_conflict", f"{cid}가 이미 있습니다.")
+    base = _snapshot_base(project, st, eff)
+    base["backup_dir"] = (pk.get("base") or {}).get("backup_dir")
+    cr = {"id": cid, "uid": uuid.uuid4().hex, "status": "open", "package": a.package, "purpose": c.get("purpose", ""),
+          "request": {"path": None, "sha256": None, "items": [{"id": a.package, "summary": c.get("purpose", ""), "facts": []}]},
+          "type": {"recommended": "E", "minimum": "E", "selected": "E", "possible": ["E"], "selected_by": "package", "reasons": ["변경 패키지 계약"]},
+          "consent": {"package": {"statement": f"{a.package} 변경 계약 승인", "contract_approval_digest": (pk.get("contract_approvals") or [{}])[-1].get("digest"),
+                                  "kind": "package_contract"}},
+          "base": base, "scope": {"files": files, "assets": [], "successors": {}, "successor_pending": [], "screens": screens,
+                                  "screens_known": not imp.get("widened") or bool(screens), "accepted_expansions": []},
+          "verification": None, "submitted": None, "approval": None, "history": [{"at": now(), "event": "opened", "package": a.package}]}
+    ch["items"][cid] = cr
+    add_history(st, "design", "change_opened", None, f"{cid} 변경 패키지 {a.package}")
+    save_state(project, st)
+    emit({"ok": True, "id": cid, "status": "open", "package": a.package, "screens": screens,
+          "next": f"계약 범위 안에서 디자인 문서·프리뷰를 고친 뒤 change verify --id {cid} → change submit --id {cid}(승인은 패키지 최종 승인으로)"})
+
+
+def _package_finalize_cmd(project: Path, st: dict, a) -> None:
+    """패키지 최종 승인 후: 디자인 기준을 새 기획으로 옮기고(영향 없는 단계 승인 승계, 일괄 무효화 없음) 패키지 디자인 변경을 패치로 공식화.
+    한 번에 원자적으로 저장하며 다시 실행해도 같은 결과입니다(멱등)."""
+    from pd_core import active_package, read_gate
+    pk = active_package(project)
+    if not pk or pk.get("id") != a.package or pk.get("status") != "finalizing":
+        block("package_not_final", f"{a.package}가 최종 통합 승인 후 finalize 중이 아닙니다.")
+    fin = pk.get("final") or {}
+    gate = read_gate(project)
+    if not gate.get("ok") or gate.get("package_basis"):
+        block("planning_not_official", "기획이 아직 공식 승인되지 않았습니다(패키지 finalize의 기획 단계를 먼저 마칩니다).", gate=gate.get("message"))
+    bundle = fin.get("bundle") or {}
+    want_cr = (bundle.get("design") or {}).get("cr")
+    cr = (st["changes"]["items"] or {}).get(want_cr) if want_cr else None
+    note = f"[{a.package} 최종 통합 승인 {fin.get('at')} · 묶음 {str(fin.get('digest'))[:12]}] {fin.get('statement')}"
+    done_cr = not cr or cr["status"] == "approved"
+    done_basis = st["based_on"]["planning_hashes"] == gate["planning_hashes"]
+    if done_cr and done_basis:
+        emit({"ok": True, "status": "already_finalized", "package": a.package})
+    with rollback_on_failure(project, files=[STATE_REL]):
+        if cr and cr["status"] != "approved":
+            if cr.get("uid") != (bundle.get("design") or {}).get("cr_uid"):
+                block("package_cr_mismatch", "최종 승인 묶음의 디자인 변경과 다릅니다.")
+            eff = require_chain_ok(st)
+            ev = _evaluate(project, st, cr)
+            if ev["diff"]["digest"] != (cr.get("submitted") or {}).get("diff_digest"):
+                block("changed_since_submit", "패키지 최종 승인 이후 디자인 파일이 바뀌었습니다. 공식화하지 않았습니다.")
+            if (cr.get("submitted") or {}).get("digest") != (bundle.get("design") or {}).get("submitted_digest"):
+                block("package_cr_mismatch", "디자인 제출 스냅샷이 최종 승인 묶음과 다릅니다.")
+            snap = _change_snapshot(project, st, cr, ev, eff)
+            append_amendment(st, cr, snap, note, cr["submitted"]["digest"], digest(cr["verification"]))
+        if not done_basis:
+            old = st["based_on"]
+            st["based_on"] = {"discovery_revision": gate.get("discovery_approved_revision"), "planning_revision": gate.get("planning_approved_revision"),
+                              "planning_hashes": gate["planning_hashes"], "planning_commit": old.get("planning_commit"),
+                              "previous": {k: old.get(k) for k in ("planning_revision", "planning_hashes", "planning_commit")}, "package": a.package}
+            st["validity"] = {"status": "valid"}
+            inherited = list(bundle.get("stages_inherited") or [])
+            add_history(st, "design", "rebased_scoped", None,
+                        f"{a.package}: planning r{(old or {}).get('planning_revision')} → r{gate.get('planning_approved_revision')}. 일괄 무효화 없음 — "
+                        f"영향 단계 {', '.join(bundle.get('stages_affected') or []) or '없음'}(패키지 패치), 승계 {', '.join(inherited) or '없음'}")
+        chk = effective(st)
+        if not chk["ok"]:
+            raise RuntimeError(f"패키지 공식화 후 체인 검사 실패: {chk['errors']}")
+        save_state(project, st)
+    emit({"ok": True, "status": "finalized", "package": a.package, "amendment": (cr or {}).get("amendment"),
+          "based_on": st["based_on"].get("planning_revision"), "inherited": bundle.get("stages_inherited")})
+
+
 def _open_cmd(project: Path, st: dict, a) -> None:
+    if getattr(a, "package", None):
+        return _open_package_cmd(project, st, a)
     eff = require_chain_ok(st)
     items, p = _req_items(a)
     scope_note = (a.scope_note or "").strip()
@@ -1315,6 +1413,7 @@ def _get_cr(st: dict, cid: str) -> dict:
 def _evaluate(project: Path, st: dict, cr: dict) -> dict:
     """현재 차이로 다시 판정: 최소 유형, 범위 밖 파일, 후속 자산 연결."""
     sc = cr["scope"]
+    _BACKUP_DIR[:] = [project / cr["base"]["backup_dir"]] if cr["base"].get("backup_dir") else []
     res = plan(project, st, cr["request"]["items"], cr["base"]["files"], cr["base"].get("registry"), cr["base"].get("head_commit"),
                sc.get("successors"), sc, other_scopes(project, st, cr))
     succ = res["successors"]
@@ -1322,8 +1421,60 @@ def _evaluate(project: Path, st: dict, cr: dict) -> dict:
     accepted = {f for x in sc.get("accepted_expansions") or [] for f in x["files"]}
     expanded = sorted(f for f in res["changed_files"] if f not in sp and f not in accepted)
     d = cr_diff(project, st, cr)
+    if cr.get("package"):  # 변경 패키지: 유형 순위 대신 승인된 계약 범위(디자인 단위·화면)로 판정
+        viol = package_violations(project, st, cr, res)
+        expanded = sorted(f for f in res["changed_files"] if not f.startswith(("docs/design/", "design-preview/", "design-profile/")))
+        res["pre_confirmation_required"] = False
+        return {"plan": res, "successors": succ, "expanded": expanded, "diff": d, "escalated": bool(viol), "package_violations": viol}
     return {"plan": res, "successors": succ, "expanded": expanded, "diff": d,
             "escalated": RANK[res["type"]["minimum"]] > RANK[cr["type"]["selected"]]}
+
+
+def package_violations(project: Path, st: dict, cr: dict, res: dict) -> list[str]:
+    """변경 패키지 디자인 변경이 승인된 계약(디자인 단위·화면, 엔진 영향 범위)을 넘는지. 넘으면 새 디자인 결정 → 추가 승인 필요."""
+    from pd_core import active_package
+    pk = active_package(project) or {}
+    if pk.get("id") != cr.get("package"):
+        return [f"변경 패키지 {cr.get('package')}가 진행 중이 아닙니다"]
+    c = (pk.get("contract") or {}).get("scope") or {}
+    imp = pk.get("impact") or {}
+    allowed = set(c.get("design", {}).get("units") or []) | set(c.get("design", {}).get("screens") or []) | set(imp.get("design_units") or []) \
+        | set(imp.get("screens") or []) | set(imp.get("seeds") or []) | set(imp.get("removed") or []) | set((c.get("ids") or {}).get("add") or [])
+    allowed_screens = {x.split("-ST")[0] for x in allowed if x.startswith("SCR-")}
+    out = []
+    from pd_impact import changed_ids
+    get_old = old_bytes_fn(project, cr["base"].get("head_commit") or "", cr["base"]["files"])
+    closures = preview_screen_closures(project)
+    for rel in res["changed_files"]:
+        if rel.startswith("docs/design/"):
+            ob = get_old(rel)
+            nb = (project / rel).read_bytes() if (project / rel).is_file() else b""
+            ot, nt = (strip_fences(ob.decode("utf-8", "replace")) if ob else ""), strip_fences(nb.decode("utf-8", "replace"))
+            ids = set(changed_ids(ot, nt))
+            ovd, nvd = blocks_by_heading(ot, 3, "VD"), blocks_by_heading(nt, 3, "VD")  # changed_ids는 VD를 모름: 시각 결정 블록 추가·삭제·변경
+            ids |= {k for k in set(ovd) | set(nvd) if ovd.get(k) != nvd.get(k)}
+            bad = sorted(i for i in ids if i not in allowed and i.split("-ST")[0] not in allowed and not re.fullmatch(r"(?:FR|NFR|US)-\d{3}", i))
+            if bad:
+                # 상위 블록(예: FLOW-005)이 바뀐 것으로 보여도, 바뀐 줄이 모두 계약 허용 하위 ID 행(예: FLOW-005-S7d)이면 그 상위 변경이 아님.
+                # 허용 ID를 적은 줄을 양쪽에서 빼고 다시 비교해 남는 변경만 위반으로 셉니다(다른 줄 변경은 그대로 잡힘).
+                pat = re.compile(r"(?<![\w-])(?:" + "|".join(sorted((re.escape(x) for x in allowed if re.fullmatch(r"[A-Z]+-\d{3}(?:-[A-Z0-9a-z]+)+", x)), key=len, reverse=True)) + r")(?![\w-])") \
+                    if any(re.fullmatch(r"[A-Z]+-\d{3}(?:-[A-Z0-9a-z]+)+", x) for x in allowed) else None
+                if pat is not None:
+                    keep = lambda t: "\n".join(ln for ln in t.splitlines() if not pat.search(ln))  # noqa: E731
+                    rest = set(changed_ids(keep(ot), keep(nt)))
+                    bad = [i for i in bad if i in rest]
+            if bad:
+                out.append(f"{rel}: 계약에 없는 디자인 단위 변경 {bad}")
+        elif rel.startswith("design-preview/"):
+            if rel.endswith("tokens.css") and "tokens" not in allowed:
+                out.append(f"{rel}: 디자인 토큰 변경은 계약에 없습니다")
+                continue
+            users = {sid for sid, fs in closures.items() if rel in fs}
+            if rel.endswith((".tsx", ".ts", ".css", ".jsx", ".js")) and users and not (users & allowed_screens):
+                out.append(f"{rel}: 계약 화면({', '.join(sorted(allowed_screens)) or '없음'}) 밖 화면({', '.join(sorted(users))})의 프리뷰 파일")
+        elif rel == (st.get("config") or {}).get("theme_file") and "tokens" not in allowed:
+            out.append(f"{rel}: 테마 변경은 계약에 없습니다")
+    return out
 
 
 def _apply_eval(st: dict, cr: dict, ev: dict, event: str) -> None:
@@ -1391,6 +1542,9 @@ def _blocking_eval(project: Path, st: dict, cr: dict, ev: dict) -> None:
     if ev["escalated"]:
         _apply_eval(st, cr, ev, "check")
         save_state(project, st)
+        if cr.get("package"):
+            block("contract_scope_exceeded", f"{cr['package']} 변경 계약 밖의 디자인 변경입니다. 실행을 멈춥니다(새 디자인 결정 → 계약 개정·추가 승인).",
+                  violations=ev.get("package_violations"))
         block("change_escalated", f"실제 변경이 최소 유형 {ev['plan']['type']['minimum']}를 요구합니다(선택 {cr['type']['selected']}). 재분류가 필요합니다.",
               reasons=ev["plan"]["type"]["reasons"], route=ev["plan"]["route"])
     if ev["expanded"]:
@@ -1576,7 +1730,8 @@ def append_amendment(st: dict, cr: dict, snap: dict, note: str, submitted_digest
     ch = st["changes"]
     chain = ch["chain"]
     amd = {"id": f"AMD-{len(chain) + 1:03d}", "seq": len(chain) + 1, "uid": uuid.uuid4().hex, "cr": cr["id"], "cr_uid": cr["uid"],
-           "type": cr["type"]["selected"], "kind": "patch", "base_head": cr["base"]["chain_head"],
+           "type": cr["type"]["selected"], "kind": "package" if cr.get("package") else "patch", "base_head": cr["base"]["chain_head"],
+           **({"package": cr["package"]} if cr.get("package") else {}),
            "stages": snap["stages"], "file_transitions": snap["file_transitions"], "screens": snap["screens"],
            "rights_inheritance": snap.get("rights_inheritance") or {}, "screen_verification": snap.get("screen_verification"),
            "submitted_digest": submitted_digest, "verification_digest": verification_digest,
@@ -1602,6 +1757,8 @@ def hypothetical_state(project: Path, st: dict, cr: dict, ev: dict, eff: dict) -
 
 
 def _approve_cmd(project: Path, st: dict, a) -> None:
+    if ((st.get("changes") or {}).get("items") or {}).get(a.id or "", {}).get("package"):
+        block("package_cr_final_only", "변경 패키지의 디자인 변경은 패키지 최종 통합 승인(/product-change approve-final → finalize)으로만 공식화합니다.")
     note = (a.note or "").strip()
     if not note:
         block("final_confirmation_required", "Type B 완료에는 사용자의 최종 패치 확인 문장이 필요합니다(--note). 최초 요청을 대신 쓸 수 없습니다.")

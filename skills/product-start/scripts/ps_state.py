@@ -216,6 +216,10 @@ def cmd_event(a) -> None:
 
 def cmd_approve(a) -> None:
     project = Path(a.project).resolve()
+    if getattr(a, "package", None):
+        if a.stage != "planning":
+            raise Blocked("unsupported_stage", "패키지 승인은 planning만 지원합니다.")
+        a.note = package_final(project, a.package, ARTIFACTS["planning"])["note"]
     if a.stage not in ARTIFACTS:
         raise Blocked("invalid_arguments", "approve는 discovery 또는 planning만 합니다.")
     fd = lock(project)
@@ -405,12 +409,35 @@ def design_json_info(project: Path) -> dict | None:
         return {"unreadable": True}
 
 
+def package_final(project: Path, pkg: str, files: list[str] | None = None) -> dict:
+    """/product-change 변경 패키지의 최종 통합 승인 기록(읽기 전용). finalize 중이고, 승인 묶음의 기획 해시가 현재 문서와 같을 때만.
+    이 기록이 T9 재개·제출·승인의 사용자 확인을 대신합니다(새 승인 문장을 만들지 않고 패키지 최종 승인 원문을 참조)."""
+    p = project / ".ai-workflow/change.json"
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        pk = d["packages"][pkg]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise Blocked("package_not_found", f"변경 패키지 {pkg}를 찾을 수 없습니다(.ai-workflow/change.json).")
+    fin = pk.get("final") or {}
+    if pk.get("status") != "finalizing" or not fin.get("statement") or not fin.get("digest"):
+        raise Blocked("package_not_final", f"{pkg}가 최종 통합 승인 후 finalize 중이 아닙니다(현재 {pk.get('status')}).")
+    prop = (fin.get("bundle") or {}).get("planning") or {}
+    if files:
+        cur = {f: (sha256(project / f) if (project / f).is_file() else None) for f in files}
+        if cur != prop.get("hashes"):
+            raise Blocked("package_planning_mismatch", f"현재 planning 문서가 {pkg} 최종 승인 묶음의 기획과 다릅니다. 기록하지 않았습니다.")
+    return {"statement": fin["statement"], "at": fin.get("at"), "digest": fin["digest"], "revision": prop.get("revision"),
+            "note": f"[{pkg} 최종 통합 승인 {fin.get('at')} · 묶음 {fin['digest'][:12]}] {fin['statement']}"}
+
+
 def cmd_reopen(a) -> None:
     """T9: 승인된 planning을 다시 엽니다. 모든 검증과 변경을 메모리에서 끝낸 뒤 한 번에 원자적으로 씁니다."""
     project = Path(a.project).resolve()
     if a.stage != "planning":
         raise Blocked("unsupported_stage", "reopen은 planning(T9)만 지원합니다. discovery 재개(T7)는 state-machine.md의 기존 절차를 따릅니다.")
-    if not a.confirm:
+    if getattr(a, "package", None):  # /product-change finalize: 최종 통합 승인이 재개 확인을 대신함
+        a.note = package_final(project, a.package, ARTIFACTS["planning"])["note"] + " (패키지 기획 개정 반영을 위한 재개)"
+    elif not a.confirm:
         raise Blocked("confirmation_required", "승인된 planning을 다시 열면 현재 승인과 design 잠금 해제가 무효가 됩니다. "
                       "사용자의 명시적 확인을 받은 뒤 --confirm으로 다시 실행하세요.")
     fd = lock(project)
@@ -613,7 +640,12 @@ def cmd_submit(a) -> None:
         return submit_discovery(a, project)
     if a.stage != "planning":
         raise Blocked("unsupported_stage", "submit은 discovery(T2)·planning(T6)만 지원합니다.")
-    if not a.confirm:
+    if getattr(a, "package", None):
+        fin = package_final(project, a.package, ARTIFACTS["planning"])
+        if fin["revision"] is not None and int(fin["revision"]) != a.revision:
+            raise Blocked("package_revision_mismatch", f"패키지 최종 승인 기획 revision({fin['revision']})과 제출 revision({a.revision})이 다릅니다.")
+        a.note = a.note or f"{a.package} 최종 통합 승인 묶음의 기획 r{a.revision} 제출"
+    elif not a.confirm:
         raise Blocked("confirmation_required", "planning을 제출하면 승인 대기(awaiting_approval)가 됩니다. 제출할 revision을 확인한 뒤 --confirm으로 실행하세요.")
     fd = lock(project)
     try:
@@ -937,6 +969,8 @@ def main() -> None:
             s.add_argument("--revision", type=int, required=True)
         if name in ("approve", "reopen", "submit", "migrate-snapshot", "request-changes"):
             s.add_argument("--revision", type=int, required=True)
+        if name in ("approve", "reopen", "submit"):
+            s.add_argument("--package", help="/product-change finalize 전용: 변경 패키지 최종 통합 승인이 사용자 확인을 대신함(직접 쓰지 않음)")
         if name == "request-changes":
             s.add_argument("--simulate-failure", action="store_true", help=argparse.SUPPRESS)
         if name == "migrate-snapshot":

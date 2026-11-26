@@ -10,6 +10,7 @@ disable-model-invocation: true
 사용자의 **제품 저장소**(현재 작업 디렉터리)에서 실행합니다. 이 Skill의 기본 디렉터리를 `$SKILL`로 표기합니다.
 
 - `reference/build-state.md`: 상태·승인·입력 기준선·preview waiver·배치 승인 정책 (**먼저 읽기**)
+  - 변경 패키지(`/product-change`)가 진행 중이면 10절을 따릅니다: 배치 승인은 `package_pending`, 계약 밖 파일·테스트 변경 차단, `package-finalize`는 패키지 finalize만 호출
 - `reference/planning.md`: 범위 추출·초안 골격·계획 JSON 형식·검증 규칙
 - `reference/execution.md`: 배치 실행·잠금·체크포인트·중단 복구·범위·테스트 약화·재시도 (**실행 전에 읽기**)
 - `reference/verification.md`: AC 태그·테스트 리포트·증거 수준(E0–E3)·검증 판정·무효화 (**검증 전에 읽기**)

@@ -27,11 +27,11 @@ if str(PD_SCRIPTS) not in sys.path:
 from pd_core import (  # noqa: E402
     DD_FILE, IA_FILE, PLANNING_FILES, SCREENS_FILE, TRACE_FILE, UISYS_FILE, UXP_FILE, WORKFLOW_STATE_REL,
     blocks_by_heading, field_line, planning_ids, preflight, read_gate, read_text, screen_info,
-    strip_comments, strip_fences, table_rows,
+    strip_comments, strip_fences, table_rows, active_package, package_contract_valid,
 )
 
 PD_IMPORTS = ("blocks_by_heading", "field_line", "planning_ids", "preflight", "read_gate", "read_text", "screen_info",
-              "strip_comments", "strip_fences", "table_rows")
+              "strip_comments", "strip_fences", "table_rows", "active_package", "package_contract_valid")
 
 SCHEMA_VERSION = 1
 PLAN_FORMAT = 1
@@ -310,7 +310,7 @@ def design_info(project: Path) -> dict:
     info["changes"] = {"enabled": bool(ch.get("enabled")), "chain_ok": ch.get("chain_ok", True), "head": ch.get("head"),
                        "amendments": [{"id": a["id"], "digest": a["digest"], "files": a.get("files") or {}, "screens": a.get("screens"), "cr": a.get("cr")}
                                       for a in ch.get("amendments") or []]}
-    pend = {x["cr"]: {"cr": x["cr"], "screens": x.get("screens"), "files": x.get("files") or []} for x in ch.get("pending") or []}
+    pend = {x["cr"]: {"cr": x["cr"], "screens": x.get("screens"), "files": x.get("files") or [], "package": x.get("package")} for x in ch.get("pending") or []}
     for p in probs:
         if p.get("kind") == "pending_change":
             pend.setdefault(p.get("cr") or "?", {"cr": p.get("cr"), "screens": p.get("screens"), "files": []})["files"] = sorted(
@@ -319,10 +319,12 @@ def design_info(project: Path) -> dict:
     return info
 
 
-def design_pending_hits(dinfo: dict, plan_batch: dict | None, requires_design: bool) -> list[dict]:
+def design_pending_hits(dinfo: dict, plan_batch: dict | None, requires_design: bool, package: dict | None = None) -> list[dict]:
     """진행 중 디자인 변경 요청 중 이 배치의 화면에 영향을 주는 것. 화면 배치가 아니면 영향 없음.
-    변경 요청 범위(화면)를 알 수 없거나 배치 화면 목록이 없으면 보수적으로 영향 있음."""
-    pend = dinfo.get("pending") or []
+    변경 요청 범위(화면)를 알 수 없거나 배치 화면 목록이 없으면 보수적으로 영향 있음.
+    같은 변경 패키지의 디자인 변경은 그 패키지 범위 배치에서는 차단하지 않습니다(패키지 제안 기준으로 구현·검증)."""
+    pend = [p for p in (dinfo.get("pending") or []) if not (package and p.get("package") == package["id"]
+                                                         and (plan_batch or {}).get("id") in package["batches"])]
     if not pend or not requires_design:
         return []
     screens = set((plan_batch or {}).get("screens") or [])
@@ -341,9 +343,11 @@ def amendment_stale_reason(project: Path, b: dict, plan_batch: dict | None) -> s
     if not b.get("requires_design"):
         return None
     chain = design_chain_raw(project)
-    seen = int((b.get("verification") or {}).get("design_amendments") or 0)
+    v = b.get("verification") or {}
+    seen = int(v.get("design_amendments") or 0)
     screens = set((plan_batch or {}).get("screens") or [])
-    hits = [a for a in chain[seen:] if a.get("screens") is None or not screens or set(a["screens"]) & screens]
+    hits = [a for a in chain[seen:] if (a.get("screens") is None or not screens or set(a["screens"]) & screens)
+            and not (v.get("package") and a.get("package") == v.get("package"))]  # 그 패키지 제안 기준으로 이미 검증함
     if not hits:
         return None
     return (f"검증 이후 승인된 디자인 패치 {', '.join(a['id'] + '(' + str(a.get('cr')) + ')' for a in hits)}가 이 배치 화면"
@@ -361,6 +365,41 @@ def require_planning(project: Path) -> dict:
     return g
 
 
+def package_scope(project: Path) -> dict | None:
+    """진행 중 변경 패키지(/product-change, 읽기 전용): 범위 배치·계획 제안·테스트·위험 작업 허용. 계약이 승인 상태가 아니면 None."""
+    pk = active_package(project)
+    if not pk or pk.get("invalid") or not package_contract_valid(project, pk):
+        return None
+    c = (pk.get("contract") or {}).get("scope") or {}
+    b = c.get("build") or {}
+    return {"id": pk["id"], "status": pk["status"], "batches": set(b.get("rework") or []) | set(b.get("regression") or []),
+            "rework": set(b.get("rework") or []), "regression": set(b.get("regression") or []),
+            "plan_proposal": (pk.get("build") or {}).get("plan_proposal"), "tests": c.get("tests") or {},
+            "risky_ops": list(c.get("risky_ops") or []), "planning_proposal": (pk.get("planning") or {}).get("proposal"),
+            "approval_digest": (pk.get("contract_approvals") or [{}])[-1].get("digest"), "final": pk.get("final"),
+            "base_dirty": (pk.get("base") or {}).get("dirty") or {}}
+
+
+def package_status(project: Path, pid: str | None) -> str | None:
+    """패키지 기록의 상태(아무 상태나, 읽기 전용). 없으면 None."""
+    if not pid:
+        return None
+    p = project / ".ai-workflow/change.json"
+    try:
+        return ((json.loads(p.read_text(encoding="utf-8")).get("packages") or {}).get(pid) or {}).get("status")
+    except (OSError, ValueError):
+        return None
+
+
+def plan_files_ok(project: Path, approved_hashes: dict, cur: dict) -> bool:
+    """계획 파일이 승인본과 같거나, 진행 중 변경 패키지가 기록한 계획 제안과 정확히 같음."""
+    if all(cur.get(k) == v for k, v in approved_hashes.items()):
+        return True
+    pk = package_scope(project)
+    prop = (pk or {}).get("plan_proposal") or {}
+    return bool(prop) and all(cur.get(k) == v for k, v in (prop.get("hashes") or {}).items() if k in approved_hashes)
+
+
 def input_baseline(project: Path, gate: dict, dinfo: dict) -> dict:
     """계획의 입력 기준선: 기획 승인 revision·해시, 디자인 단계 승인 revision·해시 요약, 계획이 읽는 디자인 문서 해시."""
     files = {}
@@ -370,7 +409,7 @@ def input_baseline(project: Path, gate: dict, dinfo: dict) -> dict:
             files[rel] = h
     return {
         "planning": {"discovery_revision": gate.get("discovery_approved_revision"), "planning_revision": gate.get("planning_approved_revision"),
-                     "hashes": gate.get("planning_hashes", {})},
+                     "hashes": gate.get("planning_hashes", {}), **({"package": pkid} if (pkid := _package_marker(project, gate)) else {})},
         "design": {"level": dinfo["level"], "workflow": dinfo.get("workflow"), "basis": dinfo.get("basis", {}),
                    "approved_digests": dinfo.get("approved_digests", {}),
                    **({"amendments": (dinfo.get("changes") or {}).get("amendments") or [],
@@ -380,11 +419,24 @@ def input_baseline(project: Path, gate: dict, dinfo: dict) -> dict:
     }
 
 
+def _package_marker(project: Path, gate: dict) -> str | None:
+    """기획 기준이 진행 중 변경 패키지의 제안(실행 중 임시 기준 또는 finalize 중 공식화된 제안)과 같으면 그 패키지 ID."""
+    if gate.get("package_basis"):
+        return gate["package_basis"]["package"]
+    pk = package_scope(project)
+    prop = (pk or {}).get("planning_proposal") or {}
+    if pk and prop and all(gate.get("planning_hashes", {}).get(f) == h for f, h in (prop.get("hashes") or {}).items()):
+        return pk["id"]
+    return None
+
+
 def baseline_changes(old: dict, new: dict) -> list[str]:
     """계획을 무효로 만드는 입력 변화. 프리뷰가 새로 승인되는 것(L2 → L3)은 무효화가 아닙니다.
     프리뷰 승인 기록이 바뀌는 것은 계획이 그 승인에 기대고 있을 때(L3)만 무효입니다."""
     ch = []
     op, np_ = old.get("planning", {}), new.get("planning", {})
+    if np_.get("package") and op.get("discovery_revision") == np_.get("discovery_revision"):
+        op = np_  # 기획 차이는 계약 승인된 변경 패키지의 제안으로 설명됨(영향 배치만 패키지 안에서 재작업·재검증, 계획은 finalize에서 재승인)
     for k in ("discovery_revision", "planning_revision"):
         if op.get(k) != np_.get(k):
             ch.append(f"planning.{k}: {op.get(k)} → {np_.get(k)}")

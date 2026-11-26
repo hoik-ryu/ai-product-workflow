@@ -4,7 +4,7 @@
 
 Claude Code Skill로 자연어 제품 아이디어를 **Product Discovery → 사용자 승인 → Product Planning(PRD, User Story, User Flow, Acceptance Criteria) → 사용자 승인**까지 연결합니다.
 
-> 현재 범위: **`/product-start`(아이디어 → PRD)**, **`/product-init`(승인된 기획 → 공통 보일러플레이트 적용·검증)**, **`/product-design`(승인된 기획 → 화면 기획·UX 설계·정적 UI 프리뷰 → 승인)**, **`/product-build`(승인된 기획·디자인 → 구현 계획·배치 → 계획 승인 → 배치별 코드 구현 → AC 기반 자동 검증 → 최종 사용자 승인, 정책·편차 원장·decide·문서 반영 대기열)**.
+> 현재 범위: **`/product-start`(아이디어 → PRD)**, **`/product-init`(승인된 기획 → 공통 보일러플레이트 적용·검증)**, **`/product-design`(승인된 기획 → 화면 기획·UX 설계·정적 UI 프리뷰 → 승인)**, **`/product-build`(승인된 기획·디자인 → 구현 계획·배치 → 계획 승인 → 배치별 코드 구현 → AC 기반 자동 검증 → 최종 사용자 승인, 정책·편차 원장·decide·문서 반영 대기열)**, **`/product-change`(승인된 제품의 변경을 변경 패키지로 묶어 사용자 승인 2회 — 변경 계약·최종 통합 — 로 기획·디자인·구현에 반영)**.
 
 ## 특징
 
@@ -40,10 +40,16 @@ skills/product-build/
   scripts/product_build.py  결정적 보조 스크립트 진입점(CLI, Python 3.11+, 표준 라이브러리만)
   scripts/pb_core.py · pb_inputs.py · pb_scan.py · pb_plan.py · pb_adopt.py · pb_exec.py · pb_verify.py · pb_ledger.py  상태·기준선 · 입력 모델 · 스택·코드 탐지 · 계획 검증·렌더링 · adopt 분석 · 배치 실행(잠금·체크포인트·범위) · AC 검증(리포트·증거 수준) · 정책·편차 원장
   templates/               build-profile.toml, implementation-plan.example.json
+skills/product-change/
+  SKILL.md                 진입점(영향 분석 → 변경 계약 1차 승인 → 계약 범위 실행 → 최종 통합 2차 승인 → finalize)
+  reference/               change-package(상태·계약 형식·영향 분석·승인 결합·finalize·복구·전환·한계)
+  scripts/product_change.py · pc_graph.py  결정적 보조 스크립트(CLI) · ID 그래프·직접/간접 영향 분석
 docs/architecture.md       설계
 docs/policies/artifact-retention.md  산출물 분류(PRODUCT·APPROVAL·TEMP)·TEMP 경로(temp-dir)·정리 정책
 docs/policies/gitignore.recommended  제품 저장소 .gitignore에 덧붙이는 권장 블록(덮어쓰기 없음)
 docs/roadmap/m1-change-request-adoption.md  기존 프로젝트에 변경 요청 M1 적용·활성화·측정 어댑터 재확인·복원 절차
+docs/roadmap/change-package-adoption.md  기존 프로젝트에 변경 패키지(/product-change) 적용·SMAPSH 사본 리허설 결과·복원 절차
+docs/roadmap/followup-e3-evidence-retention.md  후속 과제(미구현): 승인 근거 E3 증거를 실행 이력 보관 한도(12건)와 분리 보존
 tests/scenarios.md         /product-start 테스트 시나리오와 실행 기록
 tests/init-scenarios.md    /product-init 테스트 시나리오와 실행 기록
 tests/product_init_test.py /product-init 스크립트 테스트(자체 완결형): python3 tests/product_init_test.py
@@ -56,6 +62,8 @@ tests/product_design_theme_test.py /product-design 테마 계약·렌더러 경�
 tests/product_design_change_test.py /product-design 변경 요청 M1(분류·Type B·체인 무결성·동시성·Worktree 충돌) 테스트(pnpm·Chrome 필요)
 tests/product_design_change_generality_test.py Type B 범용성·영향 화면 실측·사용자 개입 횟수 테스트(독립 픽스처)
 tests/product_build_change_test.py /product-build ↔ 변경 요청 연동(패치 후 계획 유지·영향 배치 재검증·진행 중 CR 차단) 테스트
+tests/product_change_test.py /product-change 변경 패키지(P1–P5: 간접 영향·계약 승인·범위 승계·finalize 중단·재개·게이트·미커밋 보호·테스트 약화 차단) 테스트(pnpm·Chrome 필요)
+tests/product_change_rehearsal_test.py AC-164형 사례의 기존 경로 대 변경 패키지 경로 실측 비교(사용자 개입·단계 승인·바뀐 산출물·revision만 바뀐 문서)
 tests/build-scenarios.md   /product-build 테스트 시나리오와 실행 기록
 tests/product_build_test.py /product-build 스크립트 테스트(자체 완결형, 가상 제품 2종)
 tests/product_build_smapsh_check.py 실제 프로젝트 복제본 적용 확인(원본 경로는 거부)

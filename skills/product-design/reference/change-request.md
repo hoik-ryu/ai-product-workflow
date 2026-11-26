@@ -302,3 +302,11 @@ digest(SHA-256)는 **내용 지문**입니다. **암호학적 서명이 아니�
 8. 진행 중 CR의 범위를 마지막 평가 이후 확정할 수 없으면 모든 화면 배치를 막습니다. `change scope`로 다시 평가하면 영향 없는 배치는 진행할 수 있습니다.
 9. /product-build의 재검증 표시(stale)는 패치 체인 원본을 직접 읽습니다(배치를 다시 검증하게 만드는 보수적 방향만). 패치를 '인정'하는 판단은 `status`의 유효 기준만 씁니다.
 10. 패치가 생긴 뒤 구 엔진으로 되돌리면 패치된 파일이 `approved_modified`로 차단됩니다. 패치 이전 커밋으로 산출물·상태를 함께 되돌려야 합니다(적용 절차 §7).
+
+## 10. 변경 패키지(`/product-change`) 연동
+
+- `change open --package CP-###`: 진행 중 패키지의 계약 승인이 유효할 때만 엽니다. 범위 = 계약 디자인 단위·화면 + 엔진 영향 범위(영향 단위·화면·씨앗·폐기 ID·추가 ID).
+- 범위 검사(`contract_scope_exceeded`): 디자인 문서의 바뀐 ID(펜스 코드 제외, VD 블록 차이 포함)가 범위 밖이면 멈춥니다. 바뀐 줄이 모두 허용 하위 ID 행(예: FLOW-005-S7d)이면 상위 블록(FLOW-005) 변경으로 보지 않습니다. 프리뷰 파일은 허용 화면 closure 안, 토큰·테마는 계약 `tokens`가 있을 때만.
+- 패키지 CR은 `change approve`로 승인하지 않습니다(`package_cr_final_only`). `change submit`까지 한 뒤 패키지 최종 통합 승인 → `change package-finalize --package`가 영향 단계만 범위 rebase하고 Amendment(kind `package`, `package` 필드)를 덧붙입니다. 실패하면 되돌립니다(`rollback_on_failure`).
+- 패키지 CR의 변경 diff에서는 기획 문서와 `state.yaml`을 다른 범위로 세지 않습니다(기획은 패키지가 따로 관리).
+

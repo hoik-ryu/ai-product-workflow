@@ -88,3 +88,8 @@
   선택지: (a) 재검토: T9(`reopen --confirm`, 해시가 달라도 재개 가능하며 바뀐 파일이 history에 표시됨)를 적용하고 추적성을 점검한 뒤 승인을 받습니다. (b) 사용자가 복원합니다.
 
 변경된 승인 문서의 해시를 조용히 다시 기록하지 않습니다.
+
+### 변경 패키지 finalize(`--package`)
+
+`/product-change` 최종 통합 승인 후 finalize만 `ps_state.py reopen|submit|approve --stage planning --package CP-###`를 호출합니다. 스크립트는 `.ai-workflow/change.json`의 그 패키지가 `finalizing`이고 기획 문서 해시가 패키지 제안과 같을 때만 받으며, 승인 note는 `[CP-### 최종 통합 승인 <시각> · 묶음 <digest 앞 12자>] <사용자 최종 승인 원문>`입니다. 단계별 승인 문장을 새로 만들지 않습니다. 사람이 직접 `--package`를 쓰지 않습니다.
+

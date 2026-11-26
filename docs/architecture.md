@@ -7,6 +7,8 @@
 
 ## 구성
 
+> `/product-change`(변경 패키지)는 아래 단계 Skill 위에서 승인된 제품의 변경만 조정합니다(별도 절 참고).
+
 ```
 [공통 엔진: ai-product-workflow]            [제품 프로젝트]
  skills/product-start/                       .ai-workflow/state.yaml          상태(기준)
@@ -158,6 +160,15 @@
   - `decide`는 사용자 원문과 확인이 있을 때만 기록합니다. 결정되면 영향 배치는 재검증합니다.
   - 문서 반영: 제안 → 승인 → 소유 Skill 재승인 → 적용 확인. 계획 재승인 때 배치 기록을 보존합니다.
 - **재개**: 잠금을 자동으로 지우지 않습니다. 넘겨받기·외부 변경 수용·실패 재시도·체크포인트 복구는 사용자 확인 문장이 있어야 합니다. 선행 배치 조건은 `execution.dependency_min`(기본 verified)입니다.
+
+## `/product-change`: 승인된 제품의 변경 패키지(P1–P5)
+
+- 이미 승인된 제품의 변경을 **사용자 승인 2회**(변경 계약 → 최종 통합)로 처리합니다. 신규 제품의 단계별 승인 경로와 켜지 않은 프로젝트의 동작은 바뀌지 않습니다.
+- 상태는 자기 파일(`.ai-workflow/change.json`, `docs/changes/CP-###`)에만 씁니다. 다른 Skill 상태는 각 CLI의 `--package` 옵션(`ps_state.py reopen|submit|approve`, `product_design.py change open|package-finalize`, `product_build.py package-finalize`)으로만 바꾸며, 각 CLI는 `change.json`의 패키지 상태·digest를 다시 확인합니다.
+- **영향 분석(`pc_graph.py`)**: 기획 ID 블록 차이 → 직접 참조(디자인 블록·추적 행·배치) → 화면 경유 간접 영향(VD·UXD·CMP·프리뷰 closure·배치·코드). 증명할 수 없으면 이유와 함께 넓힙니다(`widened`). 폐기 ID의 유효 참조와 이력 참조를 구분합니다.
+- **임시 기준**: 계약 승인 + `snapshot-planning` 동안 `read_gate`가 패키지 기획 제안을 기준으로 보아 디자인·구현 승인이 무효가 되지 않습니다. 공식 빌드·배포는 `product_change.py gate`가 막습니다(종료 2).
+- **finalize**: 기획 → 디자인(영향 단계만 범위 rebase + Amendment kind `package`) → 구현(계획 재승인·배치 승인 승계). 각 단계 완료를 기록해 중단 후 `resume`이 멱등으로 이어 갑니다.
+- 자세한 규칙: `skills/product-change/reference/change-package.md`.
 
 ## 확장 지점(Milestone 2 이후)
 

@@ -15,7 +15,7 @@ disable-model-invocation: true
 - `reference/review-checklist.md`: UX·접근성 검토 체크리스트
 - `reference/preview.md`: 프리뷰 경계·위치·실행·피드백
 - `reference/change-impact.md`: 디자인 변경 영향 분류(`impact --design`, 다섯 유형·입력 형식·영향 계산)
-- `reference/change-request.md`: 승인 후 변경의 유형(A–E)·변경 요청(CR)·승인 패치(Amendment)·유효 승인 기준(M1: Type B 실행)
+- `reference/change-request.md`: 승인 후 변경의 유형(A–E)·변경 요청(CR)·승인 패치(Amendment)·유효 승인 기준(M1: Type B 실행), 10절 변경 패키지(`/product-change`) 연동(`change open --package`, 최종 통합 승인으로만 공식화)
 - `reference/exploration.md`: 디자인 탐색(1차 구조 시안 비교·선택 → UXD, 2차 시각 시안·레퍼런스·자산·측정·품질 평가·렌더러 → 후보 VD·테마, 15절 승인 무결성), frontend-design 절차
 - `templates/00`–`07`: 문서 템플릿(07 Design Direction은 v2), `templates/theme.example.json`: v2 테마 계약 예시, `templates/design-notes.md`: 인터뷰 기록 형식, `templates/preview/`: 프리뷰 앱 템플릿
 - `scripts/product_design.py`: 모든 판정·상태 기록 (JSON 출력, 차단 시 종료 코드 2). 같은 폴더의 `pd_core.py`·`pd_theme.py`·`pd_impact.py`와 디자인 탐색 모듈(`pd_explore.py`·`pd_reference.py`·`pd_measure.py`·`pd_visual.py`·`pd_assets.py`·`pd_quality.py`·`pd_guard.py`·`pd_render.py`), 변경 요청 모듈(`pd_change.py`·`pd_pixel.py`·`pd_screens.py`)을 불러옵니다(직접 실행하지 않음)

@@ -357,8 +357,56 @@ def read_gate(project: Path) -> dict:
         problems.append("state.yaml의 design 단계가 locked입니다 (/product-start에서 기획을 재검토 중)")
     info["planning_hashes"] = hashes_all
     if problems:
+        basis = package_planning_basis(project, problems)
+        if basis:  # /product-change: 계약 승인된 변경 패키지의 제안 기획(현재 파일과 정확히 같음)을 임시 기준으로 인정
+            return {"ok": True, **info, "planning_hashes": basis["hashes"], "planning_approved_revision": str(basis["revision"]),
+                    "package_basis": basis, "provisional": True, "official_problems": problems}
         return {"ok": False, "error": "planning_not_approved", "message": "; ".join(problems), **info}
     return {"ok": True, **info}
+
+
+CHANGE_STATE_REL = ".ai-workflow/change.json"
+PACKAGE_ACTIVE = ("executing", "escalated", "awaiting_final_approval", "finalizing")
+
+
+def active_package(project: Path) -> dict | None:
+    """/product-change 상태(.ai-workflow/change.json)의 진행 중 변경 패키지(읽기 전용). 없거나 형식 오류면 None/{"invalid": True}."""
+    p = project / CHANGE_STATE_REL
+    if not p.is_file():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"invalid": True}
+    for pid, pk in ((d.get("packages") or {}) if isinstance(d, dict) else {}).items():
+        if isinstance(pk, dict) and pk.get("status") in PACKAGE_ACTIVE:
+            return dict(pk, id=pid)
+    return None
+
+
+def package_contract_valid(project: Path, pk: dict) -> bool:
+    """계약 파일이 마지막 계약 승인 때와 같은지(현재 계약 revision에 대한 승인이 있고 파일 해시가 같음)."""
+    c = pk.get("contract") or {}
+    ap = (pk.get("contract_approvals") or [{}])[-1]
+    f = project / str(c.get("file") or "")
+    return bool(ap.get("revision")) and ap.get("revision") == c.get("revision") and ap.get("contract_sha256") == c.get("sha256") \
+        and f.is_file() and sha256_file(f) == c.get("sha256")
+
+
+def package_planning_basis(project: Path, problems: list[str]) -> dict | None:
+    """기획 게이트 문제가 '기획 문서가 승인본과 다름/승인 대기/design 잠금'뿐이고, 계약 승인된 패키지의 제안 기획과 현재 파일이
+    정확히 같으면 그 제안을 임시 기준으로 돌려줍니다. discovery 문제는 절대 넘기지 않습니다."""
+    if any(x.startswith("discovery") or DISCOVERY_FILE in x or "outdated" in x for x in problems):
+        return None
+    pk = active_package(project)
+    if not pk or pk.get("invalid") or not package_contract_valid(project, pk):
+        return None
+    prop = ((pk.get("planning") or {}).get("proposal")) or None
+    if not prop or not prop.get("hashes"):
+        return None
+    if any((sha256_file(project / f) if (project / f).is_file() else None) != prop["hashes"].get(f) for f in PLANNING_FILES):
+        return None
+    return {"package": pk["id"], "revision": prop.get("revision"), "hashes": dict(prop["hashes"]), "mode": prop.get("mode")}
 
 
 # ---------------------------------------------------------------- 사전 점검
@@ -1187,6 +1235,12 @@ def gate_or_block(project: Path) -> dict:
 
 
 def detect_outdated(project: Path, st: dict, gate: dict) -> list[str]:
+    if gate.get("package_basis"):
+        return []  # 계약 승인된 변경 패키지가 기획 차이를 설명함: 디자인 승인을 일괄 무효화하지 않음(패키지 finalize가 기준을 옮김)
+    pk = active_package(project)
+    prop = ((pk or {}).get("planning") or {}).get("proposal") if pk and not pk.get("invalid") and pk.get("status") == "finalizing" else None
+    if prop and all(gate["planning_hashes"].get(f) == h for f, h in (prop.get("hashes") or {}).items()):
+        return []  # finalize 중: 기획은 공식 승인됐고 디자인 finalize가 아직 남음(패키지가 기준 이동을 마무리)
     changed = [f for f, h in st["based_on"]["planning_hashes"].items() if gate["planning_hashes"].get(f) != h]
     if changed and st.get("validity", {}).get("status") != "outdated":
         st["validity"] = {"status": "outdated", "reason": "planning 승인 해시가 디자인 기준과 다릅니다", "changed": changed, "detected_at": now()}
@@ -1509,6 +1563,9 @@ def _preserved(orig: dict, new: dict) -> list[str]:
 
 __all__ = [
     'ALL_STAGES',
+    'active_package',
+    'package_contract_valid',
+    'CHANGE_STATE_REL',
     'preview_build',
     'CLEAN_CHECK_IGNORED_PREFIXES',
     'CONFIRMED_RE',

@@ -26,6 +26,7 @@ from pb_core import (  # noqa: E402
     STATE_REL, Blocked, add_history, baseline_changes, block, design_info, emit, engine_ref, git_lines, input_baseline,
     is_protected, load_profile, load_state, new_state, now, planning_gate, preflight, require_planning, require_state,
     save_state, sha_file, write_owned, design_pending_hits, amendment_stale_reason, design_chain_raw,
+    package_scope, package_status, plan_files_ok,
 )
 from pb_inputs import compute_scope, load_model  # noqa: E402
 from pb_plan import draft, render_md, suggest_groups, validate, waiver_valid  # noqa: E402
@@ -214,7 +215,7 @@ def cmd_check(a) -> None:
             save_state(project, st)
             emit(out | {"ok": False, "error": "plan_outdated", "message": "계획 승인 이후 입력 문서가 바뀌어 계획이 무효(outdated)가 되었습니다. 실행할 수 없습니다.",
                         "changed": changes, "plan": {"status": "outdated", "revision": plan["revision"]}, "next": next_action(st, project)}, 2)
-        modified = [k for k, v in plan["approved"]["hashes"].items() if cur.get(k) != v]
+        modified = [] if plan_files_ok(project, plan["approved"]["hashes"], cur) else [k for k, v in plan["approved"]["hashes"].items() if cur.get(k) != v]
         if modified:
             emit(out | {"ok": False, "error": "plan_modified", "message": "승인된 계획 파일이 승인 이후 바뀌었습니다. 승인으로 인정하지 않습니다(자동으로 다시 승인하지 않음).",
                         "paths": modified, "next": "변경이 의도한 것이면 reopen plan → submit plan → 사용자 승인. 아니면 파일을 승인 때 내용으로 되돌리세요."}, 2)
@@ -573,9 +574,14 @@ def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[di
     if p["status"] != "approved":
         block("plan_not_approved", f"계획이 승인되지 않았습니다(현재: {p['status']}). 승인되지 않은 계획으로는 실행 단계에 들어갈 수 없습니다.")
     cur = plan_hashes(project)
-    modified = [k for k, v in p["approved"]["hashes"].items() if cur.get(k) != v]
+    modified = [] if plan_files_ok(project, p["approved"]["hashes"], cur) else [k for k, v in p["approved"]["hashes"].items() if cur.get(k) != v]
     if modified:
         block("plan_modified", "승인된 계획 파일이 바뀌었습니다.", paths=modified)
+    pkg = package_scope(project)
+    if pkg and batch_id not in pkg["batches"]:
+        block("package_active", f"변경 패키지 {pkg['id']}가 진행 중입니다. 패키지 범위 밖 배치({batch_id})는 패키지가 끝난 뒤 진행합니다(기획·디자인 기준이 임시 상태).")
+    if pkg and pkg["status"] != "executing":
+        block("package_not_executing", f"변경 패키지 {pkg['id']}가 {pkg['status']} 상태라 구현을 진행하지 않습니다.")
     dinfo = design_info(project)
     changes = baseline_changes(p["approved"]["inputs"], input_baseline(project, gate, dinfo))
     if changes:
@@ -594,7 +600,7 @@ def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[di
     if pending:
         block("dependencies_not_ready", f"{batch_id}의 선행 배치가 아직 끝나지 않았습니다({prof['execution']['dependency_min']} 이상 필요): {', '.join(pending)}",
               pending={d: st["batches"].get(d, {}).get("status") for d in pending})
-    _pending_block(dinfo, b, read_plan_batch_safe(project, batch_id), batch_id, "시작·재개")
+    _pending_block(dinfo, b, read_plan_batch_safe(project, batch_id), batch_id, "시작·재개", project)
     if b.get("requires_design"):
         if b.get("design_path") == "preview_approved" and dinfo["level"] != "L3":
             block("design_not_ready", "계획은 승인된 프리뷰를 기준으로 했지만 지금은 프리뷰 승인이 유효하지 않습니다.")
@@ -611,11 +617,11 @@ def read_plan_batch_safe(project: Path, batch_id: str) -> dict | None:
     return _plan_batches(project).get(batch_id)
 
 
-def _pending_block(dinfo: dict, b: dict, plan_batch: dict | None, batch_id: str, action: str) -> None:
+def _pending_block(dinfo: dict, b: dict, plan_batch: dict | None, batch_id: str, action: str, project: Path | None = None) -> None:
     """진행 중인 디자인 변경 요청(CR)이 이 배치 화면에 영향을 주면 차단합니다. 승인 전 변경은 승인된 디자인이 아닙니다."""
     if b.get("requires_design") and (dinfo.get("changes") or {}).get("chain_ok") is False:
         block("design_amendment_chain_broken", f"/product-design 승인 패치 체인에 문제가 있어 {batch_id}를 {action}할 수 없습니다(유효 디자인 기준을 확정할 수 없음).")
-    hits = design_pending_hits(dinfo, plan_batch, bool(b.get("requires_design")))
+    hits = design_pending_hits(dinfo, dict(plan_batch or {}, id=batch_id), bool(b.get("requires_design")), package_scope(project) if project else None)
     if hits:
         block("design_change_pending", f"{batch_id}의 화면에 영향을 주는 디자인 변경 요청이 진행 중입니다({', '.join(str(h['cr']) for h in hits)}). "
               f"승인 전 변경은 승인된 디자인이 아니므로 {action}할 수 없습니다. 변경 요청이 승인(또는 취소)된 뒤 진행합니다.",
@@ -692,7 +698,14 @@ def cmd_batch_start(a) -> None:
     b, pb_, _ = entry_checks(project, st, a.batch, prof)
     if b["status"] in ("in_progress", "paused", "failed"):
         block("already_started", f"{a.batch}는 이미 시작됐습니다({b['status']}). resume으로 이어서 합니다(작업 중복 방지).")
-    if b["status"] != "planned":
+    pkg0 = package_scope(project)
+    if b["status"] in ("verified", "approved", "stale", "verify_failed") and pkg0 and pkg0["status"] == "executing" and a.batch in pkg0["rework"]:
+        # 변경 패키지 계약의 재작업 배치: 새 실행으로 시작(기준 = 패키지가 바꾼 기획·디자인이 반영된 현재 작업 트리).
+        # 이전 실행·검증·승인 기록은 보존하고(run_history), 최종 승인은 패키지 finalize가 다시 기록합니다.
+        b.setdefault("run_history", []).append({"archived_at": now(), "package": pkg0["id"], "status": b["status"], "run": b.get("run"),
+                                                "verification": b.get("verification")})
+        b["status"] = "planned"
+    elif b["status"] != "planned":
         block("not_startable", f"{a.batch} 상태가 {b['status']}입니다. planned 배치만 시작할 수 있습니다.")
     active = [k for k, x in st["batches"].items() if x["status"] in ("in_progress", "paused", "failed") and not waiting_policy(x)]
     if active:
@@ -704,7 +717,17 @@ def cmd_batch_start(a) -> None:
         probs = _ui_plan_problems(project, st, prof, a.batch)
         if probs:
             block("ui_plan_required", f"{a.batch}는 UI 배치입니다. 구현 전에 UI Brief와 검증된 UI Plan이 필요합니다(reference/ui.md §4).", problems=probs)
-    if b.get("approval") == "user" and not (a.confirm_risk and (a.note or "").strip()):
+    pkg = package_scope(project)
+    risk_by_contract = None
+    if b.get("approval") == "user" and pkg and a.batch in pkg["batches"]:
+        need = list(b.get("approval_reasons") or [])
+        allowed = {str(x).split(":", 1)[-1] for x in pkg["risky_ops"]}
+        outside = [r for r in need if str(r).split(":", 1)[-1] not in allowed]
+        if outside:
+            block("risk_outside_contract", f"{a.batch}의 위험 사유가 변경 패키지 {pkg['id']} 계약의 허용 위험 작업에 없습니다. 계약 개정·승인이 필요합니다.",
+                  reasons=outside, allowed=sorted(allowed))
+        risk_by_contract = {"kind": "risk", "by": "package_contract", "package": pkg["id"], "reasons": need, "at": now()}
+    elif b.get("approval") == "user" and not (a.confirm_risk and (a.note or "").strip()):
         block("risk_confirmation_required", f"{a.batch}는 사용자 확인이 필요한 배치입니다. 시작 전에 범위와 위험을 설명하고 명시적 확인을 받으세요.",
               reasons=b.get("approval_reasons"), hint="확인을 받으면 batch-start --confirm-risk --note '<사용자 확인 문장>'")
     if read_lock(project) is not None:
@@ -716,9 +739,17 @@ def cmd_batch_start(a) -> None:
                     "dirty": changed_vs(project, head, exclude)},
            "tasks": {t["id"]: {"status": "pending", "files": [], "at": None, "note": ""} for t in task_order(pb_)},
            "attempts": {}, "failure": None, "confirmations": [], "findings": {}, "checkpoint": None, "submitted": None}
-    if b.get("approval") == "user":
+    if risk_by_contract:
+        run["confirmations"].append(risk_by_contract)
+    elif b.get("approval") == "user":
         run["confirmations"].append({"kind": "risk", "note": a.note.strip(), "at": now(), "reasons": b.get("approval_reasons")})
     overlap = sorted(x for x in run["base"]["dirty"] if in_patterns(x, allow) or in_patterns(x, shared))
+    pre_dirty = (pkg or {}).get("base_dirty") or {}
+    if overlap and pkg and a.batch in pkg["batches"] and all(x in pre_dirty and run["base"]["dirty"].get(x) == pre_dirty[x] for x in overlap):
+        # 변경 패키지 시작 때 기록한 미커밋 작업과 같은 파일·같은 내용: 패키지가 사용자 작업을 구분해 보관하고 있으므로 별도 확인 없이 기준으로 받아들임
+        run["base"]["dirty_in_scope_accepted"] = overlap
+        run["confirmations"].append({"kind": "dirty_in_scope", "by": "package_contract", "package": pkg["id"], "paths": overlap, "at": now()})
+        overlap = []
     if overlap:
         if not (a.allow_dirty_in_scope and (a.note or "").strip()):
             block("uncommitted_in_scope", f"배치 수정 범위 안에 커밋되지 않은 파일이 {len(overlap)}개 있습니다. 이 파일들을 고치면 사용자·다른 세션의 작업과 구분할 수 없습니다.",
@@ -890,6 +921,15 @@ def cmd_batch_submit(a) -> None:
         block("checkpoint_corrupt", f"체크포인트를 믿을 수 없습니다({g['checkpoint_problem']}). resume --restore-checkpoint로 복구하세요.")
     _block_on_hard(g, "제출")
     tests = [x for x in g["since_base"]["test_changes"] if x["needs_confirmation"]]
+    pkg = package_scope(project)
+    if tests and pkg and a.batch in pkg["batches"]:
+        covered, outside = contract_test_changes(pkg, tests, project, run)
+        if outside:
+            block("test_changes_outside_contract", f"변경 패키지 {pkg['id']} 계약에 없는 테스트 삭제·약화·수정입니다. 계약을 개정해 사용자 승인을 받은 뒤 진행합니다(약화·무력화는 계속 차단).",
+                  outside=outside, covered=[x["path"] for x in covered])
+        run["confirmations"].append({"kind": "test_changes", "by": "package_contract", "package": pkg["id"], "contract_approval_digest": pkg["approval_digest"],
+                                     "at": now(), "paths": [x["path"] for x in covered]})
+        tests = []
     if tests and not (a.confirm_test_changes and (a.note or "").strip()):
         block("test_changes_need_confirmation", "기존 테스트가 삭제·약화·수정되었습니다. 사용자 확인 없이 제출하지 않습니다.", test_changes=tests,
               hint="변경 이유를 사용자에게 설명하고 확인을 받으면 batch-submit --confirm-test-changes --note '<사용자 확인 문장>'")
@@ -1061,6 +1101,170 @@ def cmd_guard(a) -> None:
 DONE_STATES = ("verified", "approved")
 
 
+def targets_for(project: Path, st: dict, prof: dict, b: dict, bid: str, pkg: dict | None) -> dict:
+    """검증 목표. 변경 패키지 배치는 패키지 계획 제안에서 계획 승인과 같은 규칙으로 목표를 다시 계산하고(새 AC의 위험 목표 포함),
+    사용자 승인된 목표 변경(target_overrides)을 그 위에 적용합니다. 패키지가 아니면 기존 값(effective_targets)."""
+    if not pkg or bid not in pkg["batches"]:
+        return effective_targets(b)
+    v = run_validate(project, st, read_plan(project), prof, design_info(project))
+    derived = (((v.get("derived") or {}).get("batches") or {}).get(bid) or {}).get("ac_targets")
+    if not derived:
+        return effective_targets(b)
+    t = dict(derived)
+    for o in b.get("target_overrides", []):
+        if o["ac"] in t:
+            t[o["ac"]] = o["to"]
+    return t
+
+
+TEST_UNIT_RE = re.compile(r"^(\s*)(?:async\s+)?(?:def\s+test\w*|(?:it|test)(?:\.\w+)?\s*\()")
+
+
+def _test_units(text: str) -> list[tuple[int, int, str]]:
+    """테스트 단위(파이썬 def test…, JS it(·test()의 줄 범위와 본문. 다음 같은·바깥 들여쓰기 단위 또는 바깥 블록까지."""
+    lines = text.splitlines()
+    starts = [(i, len(m.group(1))) for i, l in enumerate(lines) if (m := TEST_UNIT_RE.match(l))]
+    out = []
+    for k, (i, ind) in enumerate(starts):
+        j = i + 1
+        while j < len(lines):
+            l = lines[j]
+            if l.strip() and (len(l) - len(l.lstrip())) <= ind and not l.lstrip().startswith((")", "}", "]")):
+                break
+            j += 1
+        out.append((i, j, "\n".join(lines[i:j])))
+    return out
+
+
+def _only_retired_units_removed(old: str, new: str, retired: set[str]) -> tuple[bool, str]:
+    """바뀐 줄이 모두 '통째로 지운 테스트 단위'에 속하고, 그 단위마다 폐기 AC가 적혀 있어야 합니다(같은 파일의 다른 AC 테스트 변경·약화 차단)."""
+    import difflib
+    sm = difflib.SequenceMatcher(a=old.splitlines(), b=new.splitlines(), autojunk=False)
+    removed_idx, added = set(), []
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op in ("delete", "replace"):
+            removed_idx |= set(range(i1, i2))
+        if op in ("insert", "replace"):
+            added += [x for x in new.splitlines()[j1:j2] if x.strip()]
+    if added:
+        return False, f"지운 것 외에 바뀌거나 추가된 줄이 있습니다: {added[:2]}"
+    units = _test_units(old)
+    covered = set()
+    for i, j, body in units:
+        span = set(range(i, j))
+        nonblank = {k for k in span if old.splitlines()[k].strip()}
+        if nonblank and nonblank <= removed_idx:
+            if not any(re.search(re.escape(a) + r"\b", body) for a in retired):
+                return False, f"폐기 AC가 적히지 않은 테스트를 지웠습니다: {body.splitlines()[0].strip()[:80]}"
+            covered |= span
+    stray = [k for k in removed_idx if k not in covered and old.splitlines()[k].strip()]
+    if stray:
+        return False, f"테스트 단위 일부만 지웠거나 단위 밖 줄을 지웠습니다: {[old.splitlines()[k].strip()[:60] for k in stray[:2]]}"
+    return True, ""
+
+
+def contract_test_changes(pkg: dict, tests: list[dict], project: Path | None = None, run: dict | None = None) -> tuple[list[dict], list[dict]]:
+    """패키지 계약으로 확인된 테스트 변경(covered)과 계약 밖 변경(outside).
+    - 파일 삭제: 계약 tests.remove의 경로
+    - 파일 안 일부 삭제(modified): 계약 tests.remove 경로이고, 지운 것이 '폐기 AC가 적힌 테스트 단위 통째'뿐일 때만
+    - 약화·그 밖 수정: 계약 tests.modify에 경로가 명시됐을 때만
+    계약에 없는 삭제·약화·수정은 계속 차단합니다(E3 등 증거 기준은 바꾸지 않음)."""
+    rm = {p_: {t.get("ac")} | set(t.get("acs") or []) for t in pkg["tests"].get("remove") or [] for p_ in (t.get("paths") or [])}
+    md = {p_ for t in pkg["tests"].get("modify") or [] if isinstance(t, dict) for p_ in (t.get("paths") or [])}
+    covered, outside = [], []
+    from pb_exec import _base_content
+    for x in tests:
+        ok, why = False, "계약에 없는 테스트 변경"
+        if x["path"] in md:
+            ok = True
+        elif x["kind"] == "deleted" and x["path"] in rm:
+            ok = True
+        elif x["kind"] == "modified" and x["path"] in rm and project is not None and run is not None:
+            old = _base_content(project, run, x["path"]) or ""
+            new = (project / x["path"]).read_text(encoding="utf-8", errors="replace") if (project / x["path"]).is_file() else ""
+            ok, why = _only_retired_units_removed(old, new, {a for a in rm[x["path"]] if a})
+        elif x["kind"] == "weakened":
+            why = "검증 조건 완화(skip·assert 완화)는 계약 tests.modify에 명시돼야 합니다"
+        (covered if ok else outside).append(x if ok else dict(x, why=why))
+    return covered, outside
+
+
+def cmd_package_finalize(a) -> None:
+    """/product-change 최종 통합 승인 후: 구현 계획 재승인(제안이 있으면)과 패키지 범위 배치의 최종 승인 기록.
+    승인 문장은 패키지 최종 승인 원문을 참조로 남깁니다(새로 만들지 않음). 다시 실행해도 같은 결과(멱등)."""
+    project = project_of(a)
+    gate = require_planning(project)
+    if gate.get("package_basis"):
+        block("planning_not_official", "기획이 아직 공식 승인되지 않았습니다(패키지 finalize의 기획 단계를 먼저 마칩니다).")
+    pkg = package_scope(project)
+    if not pkg or pkg["id"] != a.package or pkg["status"] != "finalizing":
+        block("package_not_final", f"{a.package}가 최종 통합 승인 후 finalize 중이 아닙니다.")
+    fin = pkg["final"] or {}
+    note = f"[{a.package} 최종 통합 승인 {fin.get('at')} · 묶음 {str(fin.get('digest'))[:12]}] {fin.get('statement')}"
+    bundle = fin.get("bundle") or {}
+    steps = []
+    st = require_state(project)
+    prop = bundle.get("plan")
+    if prop and (st["plan"].get("approved") or {}).get("hashes") != prop["hashes"]:
+        if plan_hashes(project) != prop["hashes"]:
+            block("plan_changed_since_final", "최종 승인 이후 구현 계획 파일이 바뀌었습니다. 공식화하지 않았습니다.")
+        me = Path(__file__).resolve()
+        seq = []
+        if st["plan"]["status"] in ("approved", "outdated"):
+            seq.append(["reopen", "plan", "--reason", f"{a.package} 최종 통합 승인 범위의 계획 개정 반영"])
+        if st["plan"]["status"] in ("approved", "outdated", "drafting"):
+            seq.append(["submit", "plan"])
+        for args in seq:
+            pr = subprocess.run([sys.executable, "-I", str(me), *args, "--project", str(project)], capture_output=True, text=True)
+            steps.append({"cmd": " ".join(args[:2]), "code": pr.returncode})
+            if pr.returncode != 0:
+                block("package_finalize_failed", f"{' '.join(args[:2])} 단계에서 멈췄습니다. 원인을 고친 뒤 다시 finalize 합니다.", detail=pr.stdout[-800:])
+        st = require_state(project)
+        if st["plan"]["status"] == "awaiting_approval":
+            pr = subprocess.run([sys.executable, "-I", str(me), "approve", "plan", "--revision", str(st["plan"]["revision"]), "--note", note,
+                                 "--project", str(project)], capture_output=True, text=True)
+            steps.append({"cmd": "approve plan", "code": pr.returncode})
+            if pr.returncode != 0:
+                block("package_finalize_failed", "approve plan 단계에서 멈췄습니다.", detail=pr.stdout[-800:])
+        st = require_state(project)
+    prof = profile_or_block(project)
+    pbs = _plan_batches(project)
+    recorded, carried = [], []
+    for bid, want in sorted((bundle.get("batches") or {}).items()):
+        b = st["batches"].get(bid)
+        if not b:
+            block("package_batch_missing", f"{bid}가 구현 상태에 없습니다.")
+        if any(x.get("package") == a.package and x.get("valid") for x in b.get("approvals") or []):
+            continue
+        v = b.get("verification") or {}
+        if b["status"] not in ("verified", "approved") or v.get("package") != a.package or v.get("run_id") != want.get("run_id"):
+            block("package_batch_changed", f"{bid}의 검증 기록이 최종 승인 묶음과 다릅니다(상태 {b['status']}, 실행 {v.get('run_id')}).")
+        w = freshness(project, prof, bid, b, pbs.get(bid))
+        if w:
+            block("verification_stale", f"{bid}: 최종 승인 이후 검증이 무효가 됐습니다({w}). 공식화하지 않았습니다.")
+        ui_rec = None
+        if v.get("ui") or UR.ui_required(prof, pbs.get(bid)):  # UI 배치: 일반 최종 승인과 같은 검토 차단 조건(약화 없음)
+            rv = _ui_review_now(project, st, prof, bid)
+            if rv["blockers"]:
+                block("ui_approval_blocked", f"{bid} UI 최종 승인을 막는 항목이 있습니다(패키지에서도 같음).", blockers=rv["blockers"])
+            if (v.get("ui") or {}).get("evidence_digest") != want.get("ui_evidence"):
+                block("package_batch_changed", f"{bid}의 UI 검증 증거가 최종 승인 묶음과 다릅니다.")
+            ui_rec = {"review_id": rv["review_id"], "by": "user(변경 패키지 최종 통합 승인)", "evidence_digest": (v.get("ui") or {}).get("evidence_digest")}
+        prev = next((x for x in reversed(b.get("approvals") or []) if x.get("valid")), None)
+        rec = {"at": now(), "statement": note, "run_id": v["run_id"], "scope_tree": v.get("scope_tree"), "targets": v.get("targets"), "valid": True,
+               "package": a.package, "kind": "package_final", **({"ui": ui_rec} if ui_rec else {})}
+        if prev:
+            rec["carried_from"] = {"at": prev.get("at"), "run_id": prev.get("run_id")}
+            carried.append(bid)
+        else:
+            recorded.append(bid)
+        b.setdefault("approvals", []).append(rec)
+        b["status"] = "approved"
+        add_history(st, "batch", "approved", None, f"{bid}: {a.package} 최종 통합 승인으로 기록")
+    save_state(project, st)
+    emit({"ok": True, "status": "finalized", "package": a.package, "plan_steps": steps, "approved": recorded, "approval_carried": carried})
+
+
 def effective_targets(b: dict) -> dict:
     """계획 승인 때의 AC 목표(ac_targets)에 사용자 승인된 변경(target_overrides)을 순서대로 적용한 값. 원래 기록은 바꾸지 않습니다."""
     t = dict(b.get("ac_targets") or {})
@@ -1078,6 +1282,8 @@ def freshness(project: Path, prof: dict, bid: str, b: dict, plan_batch: dict | N
         return "검증 실행 원본(run.json)이 없거나 digest가 맞지 않습니다(증거 유실·조작 의심)"
     if plan_batch is None:
         return "계획에서 배치를 찾을 수 없습니다"
+    if v.get("package") and package_status(project, v["package"]) not in ("executing", "escalated", "awaiting_final_approval", "finalizing", "approved"):
+        return f"변경 패키지 {v['package']} 기준의 검증인데 그 패키지가 승인되지 않았습니다({package_status(project, v['package'])}) — 재검증 필요"
     amd = amendment_stale_reason(project, b, plan_batch)  # 승인된 디자인 패치(Type B) 영향 화면 → 이 배치만 재검증
     if amd:
         return amd
@@ -1193,7 +1399,11 @@ def cmd_approve_batch(a, project: Path, st: dict) -> None:
     if w:
         block("verification_stale", f"검증 이후 바뀐 것이 있어 승인할 수 없습니다: {w}. 다시 검증하세요.")
     policy_block(project, a.batch, "최종 승인")
-    _pending_block(design_info(project), b, pbs.get(a.batch), a.batch, "최종 승인")
+    pkg = package_scope(project)
+    if pkg:
+        block("package_pending", f"변경 패키지 {pkg['id']}가 진행 중입니다. 배치 최종 승인은 패키지 최종 통합 승인 → finalize가 함께 기록합니다(별도 승인 없음)."
+              if a.batch in pkg["batches"] else f"변경 패키지 {pkg['id']}가 진행 중이라 다른 배치의 최종 승인을 미룹니다(기준이 임시 상태).")
+    _pending_block(design_info(project), b, pbs.get(a.batch), a.batch, "최종 승인", project)
     up = upstream_problems(project, st, prof, a.batch, pbs)
     if up:
         block("upstream_not_verified", "선행 배치의 검증이 유효하지 않아 승인할 수 없습니다.", upstream=up)
@@ -1317,13 +1527,14 @@ def cmd_verify(a) -> None:
     if p["status"] != "approved":
         block("plan_not_approved", "승인된 계획이 없습니다.")
     cur = plan_hashes(project)
-    if any(cur.get(k) != v for k, v in p["approved"]["hashes"].items()):
+    if not plan_files_ok(project, p["approved"]["hashes"], cur):
         block("plan_modified", "승인된 계획·프로필이 바뀌었습니다. 승인된 프로필의 명령만 실행합니다.")
+    pkg = package_scope(project)  # 검증은 증거 수집(승인 아님): 패키지 진행 중에는 모든 배치 검증을 패키지 기준으로 표시(전체 회귀). 취소되면 stale
     b = st["batches"].get(a.batch)
     if not b:
         block("unknown_batch", f"승인된 계획에 {a.batch}가 없습니다.")
     plan_batch = read_plan_batch(project, a.batch)
-    _pending_block(design_info(project), b, plan_batch, a.batch, "검증")
+    _pending_block(design_info(project), b, plan_batch, a.batch, "검증", project)
     probe = b["status"] == "in_progress"
     lock = None
     if probe:
@@ -1354,7 +1565,8 @@ def cmd_verify(a) -> None:
     mentioned = mentions_in_tests(project, prof)
     acs = list(plan_batch.get("acs") or [])
     legacy = ((b.get("run") or {}).get("submitted") or {}).get("kind") == "adopt"
-    ev = evaluate(acs, effective_targets(b), run, hist, mentioned, run["tree_after"], set(b.get("fi_accepted", {})), legacy, project)
+    tgt = targets_for(project, st, prof, b, a.batch, pkg)
+    ev = evaluate(acs, tgt, run, hist, mentioned, run["tree_after"], set(b.get("fi_accepted", {})), legacy, project)
     ok, reasons = batch_verdict(run, ev)
     # M3.5 정책: UI 흐름 배치에서만, 필수 브라우저 단계(pb-ui)가 not_run이면 그 사유로는 verify를 실패시키지 않고 browser_pending으로 남깁니다
     # (최종 UI 승인 차단). 비UI 배치의 필수 브라우저 단계 미실행은 M2 규칙대로 verify 실패, 선택 단계 미실행은 기록만.
@@ -1426,7 +1638,8 @@ def cmd_verify(a) -> None:
         prev_status, prev_scope = b["status"], (b.get("verification") or {}).get("scope_tree")
         b["verification"] = summary | {"evaluation": ev, "reasons": reasons, "code_tree": run["tree_after"], "case_files": case_files,
                                        "scope_tree": tree_hash(project, scope), "deps": deps_affecting(run["deps_tree"], scope),
-                                       "targets": effective_targets(b), "design_amendments": len(design_chain_raw(project))}
+                                       "targets": tgt, "design_amendments": len(design_chain_raw(project)),
+                                       **({"package": pkg["id"]} if pkg else {})}
         if ui:
             b["verification"]["ui"] = ui
         prev_ui = next((x.get("ui") for x in reversed(b.get("approvals") or []) if x.get("valid")), None)
@@ -2506,6 +2719,7 @@ def main() -> None:
     s = add("resume", cmd_resume); s.add_argument("--batch"); s.add_argument("--owner", default=""); s.add_argument("--take-over", action="store_true")
     s.add_argument("--accept-changes", action="store_true"); s.add_argument("--retry-failed", action="store_true")
     s.add_argument("--restore-checkpoint", choices=("prev", "rebuild")); s.add_argument("--note", default="")
+    s = add("package-finalize", cmd_package_finalize); s.add_argument("--package", required=True)
     s = add("verify", cmd_verify); s.add_argument("--batch", required=True); s.add_argument("--lock"); s.add_argument("--available", default="")
     s.add_argument("--steps", default="")
     s = add("ac-report", cmd_ac_report); s.add_argument("--batch")

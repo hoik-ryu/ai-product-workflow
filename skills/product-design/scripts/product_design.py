@@ -938,7 +938,9 @@ def main() -> None:
     s.add_argument("--use", action="append"); s.add_argument("--only", default=""); s.add_argument("--note", default="")
     s.add_argument("--limit", action="append")
     s = add("change", CH.cmd_change)
-    s.add_argument("action", choices=("plan", "enable", "disable", "open", "scope", "verify", "submit", "approve", "cancel", "rebase", "status"))
+    s.add_argument("action", choices=("plan", "enable", "disable", "open", "scope", "verify", "submit", "approve", "cancel", "rebase", "status",
+                                      "package-finalize"))
+    s.add_argument("--package", help="/product-change 변경 패키지 ID(open·package-finalize)")
     s.add_argument("--request"); s.add_argument("--base"); s.add_argument("--id"); s.add_argument("--type", choices=CH.TYPES)
     s.add_argument("--scope-note", default=""); s.add_argument("--pre-confirm", default=""); s.add_argument("--note", default="")
     s.add_argument("--reason", default=""); s.add_argument("--accept", action="store_true"); s.add_argument("--confirm", action="store_true")

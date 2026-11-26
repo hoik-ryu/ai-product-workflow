@@ -174,3 +174,12 @@ preview waiver는 **프리뷰 승인만** 대신하는 공식 예외 경로입�
 | 진행 중 CR의 영향 화면 ∩ 배치 화면(또는 범위 불명) | `batch-start`·`resume`·`execute-gate`·`verify`·`approve batch` 차단(`design_change_pending`). 계획은 유효, 영향 없는 배치는 진행 |
 | 패치 체인 문제 | 화면 배치 작업 차단(`design_amendment_chain_broken`) |
 | Type A(제품 코드 수정) | 기존 `guard --base`(보호 경로)·`verify`·`ledger` 그대로 |
+
+## 10. 변경 패키지(`/product-change`) 연동
+
+- 패키지가 진행 중이면 입력 기준선의 기획은 패키지 제안(`planning.package`)이고, 계약 승인이 유효한 동안 기획 변경으로 계획이 outdated가 되지 않습니다.
+- 재작업 배치(`build.rework`)는 `batch-start`가 새 실행으로 시작합니다(이전 run 기록은 보관). `verify` 결과에는 패키지 표식이 붙고, 최종 묶음은 재작업·회귀 배치가 패키지 표식으로 검증되었는지 확인합니다.
+- 계약 범위 밖 파일·위험 작업·테스트 변경은 막습니다. 테스트 삭제는 계약 `tests.remove`의 AC 단위만 허용합니다(같은 파일의 다른 AC 단위 삭제·assert 완화는 차단).
+- 패키지 진행 중 `approve batch`는 `package_pending`. 최종 통합 승인 후 `package-finalize --package`가 계획을 reopen·submit·approve하고 패키지 기준으로 검증된 배치의 승인을 승계합니다.
+- 취소된 패키지 기준으로 한 검증은 stale(승인된 기준이 아님)입니다.
+

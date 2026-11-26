@@ -221,7 +221,7 @@ def _cr_allows(st: dict, reg: dict, act: str, aid: str | None) -> bool:
         return False
     snap = (eff["records"].get("design_direction") or {}).get("assets") or {}
     for cr in CH.active_crs(st).values():
-        if cr["type"]["selected"] != "B":
+        if cr["type"]["selected"] != "B" and not cr.get("package"):
             continue
         sc = cr.get("scope") or {}
         if aid in (sc.get("assets") or []) and (act == "replace" or act == "confirm"):
