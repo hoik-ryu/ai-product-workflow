@@ -196,6 +196,21 @@ def explore_status(st: dict, rel: str) -> str:
 
 
 # ---------------------------------------------------------------- 공식 디자인 근거
+def _package_provisional_dd(st: dict, approved_hash: str | None, cur_hash: str | None) -> bool:
+    """변경 패키지(/product-change) 진행 중: 제출된(awaiting_confirmation) 패키지 디자인 변경이 승인본(before)에서 만든 07(after)과
+    지금 07이 정확히 같으면 임시 기준으로 인정합니다. 패키지의 최종 통합 승인 전에도 회귀 배치를 검증할 수 있게 하되,
+    승인 VD 목록은 기존 승인 기록 그대로(새 VD를 승인으로 만들지 않음). 다른 경우는 모두 기존처럼 불일치."""
+    if not approved_hash or not cur_hash:
+        return False
+    for cr in (((st.get("changes") or {}).get("items")) or {}).values():
+        if not isinstance(cr, dict) or not cr.get("package") or cr.get("status") != "awaiting_confirmation":
+            continue
+        f = (((((cr.get("submitted") or {}).get("stages") or {}).get("design_direction") or {}).get("files")) or {}).get(DD_FILE) or {}
+        if f.get("before") == approved_hash and f.get("after") == cur_hash:
+            return True
+    return False
+
+
 def official_design(project: Path, st: dict | None = None) -> dict:
     """승인 기록과 일치하는 공식 디자인: 승인 VD(07 해시가 승인 기록과 같을 때만), 공식 토큰 이름, 자산 레지스트리, 탐색 선택 출처."""
     st = st if st is not None else _state(project)
@@ -206,7 +221,10 @@ def official_design(project: Path, st: dict | None = None) -> dict:
         import pd_change as CH  # 유효 승인 기준(승인 기록 + 승인 패치)의 단일 구현. 체인이 깨지면 공식 디자인을 인정하지 않음
         eff = CH.effective(st)
         rec = eff["records"].get("design_direction") if eff["ok"] else None
-    intact = bool(rec) and (rec.get("hashes") or {}).get(DD_FILE) == (sha256_file(project / DD_FILE) if (project / DD_FILE).is_file() else None)
+    cur_dd = sha256_file(project / DD_FILE) if (project / DD_FILE).is_file() else None
+    intact = bool(rec) and (rec.get("hashes") or {}).get(DD_FILE) == cur_dd
+    if bool(rec) and not intact:
+        intact = _package_provisional_dd(st, (rec.get("hashes") or {}).get(DD_FILE), cur_dd)
     text = strip_fences(re.sub(r"<!--.*?-->", "", read_text(project, DD_FILE), flags=re.S))
     blocks = blocks_by_heading(text, 3, "VD")
     approved_ids = set((rec or {}).get("approved_vds") or []) if intact else set()

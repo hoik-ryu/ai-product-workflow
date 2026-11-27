@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+import re
 import urllib.request
 from pathlib import Path
 
@@ -36,8 +37,7 @@ ENTRY_HTML = """<!doctype html>
 """
 ENTRY_TSX = """// /product-design change verify 전용 측정 엔트리(임시 사본에서만 존재, 승인 트리에 쓰지 않음)
 import { createRoot } from 'react-dom/client'
-import './tokens.css'
-import './preview.css'
+__CSS_IMPORTS__
 import { screens } from './registry'
 const [id, state] = window.location.hash.replace(/^#/, '').split('/')
 const s = (screens as Record<string, { render: (st: string) => unknown }>)[id]
@@ -53,6 +53,27 @@ export default defineConfig(async (env) => mergeConfig(typeof base === 'function
   build: { outDir: '__pd_measure_dist', emptyOutDir: true, assetsInlineLimit: 0, rollupOptions: { input: '__pd_measure.html' } },
 }))
 """
+
+
+DEFAULT_CSS = ["./tokens.css", "./preview.css"]
+_CSS_IMPORT_RE = re.compile(r"""^\s*import\s+['"]([^'"]+\.css)['"]""", re.M)
+
+
+def entry_css_imports(preview_src: Path) -> list[str]:
+    """측정 엔트리가 불러올 CSS: 프리뷰 진입 파일(src/main.*)의 CSS import를 순서대로 그대로 씁니다.
+    프로젝트가 Tailwind·화면별 CSS·글꼴을 진입 파일에서 불러오면 측정 화면도 같은 스타일로 그려야 하기 때문입니다.
+    진입 파일이 없거나 CSS import가 없으면 기본(tokens.css·preview.css)."""
+    for name in ("main.tsx", "main.ts", "main.jsx", "main.js"):
+        f = preview_src / name
+        if f.is_file():
+            found = _CSS_IMPORT_RE.findall(f.read_text(encoding="utf-8", errors="replace"))
+            if found:
+                return found
+    return list(DEFAULT_CSS)
+
+
+def entry_tsx(preview_src: Path) -> str:
+    return ENTRY_TSX.replace("__CSS_IMPORTS__", "\n".join(f"import '{c}'" for c in entry_css_imports(preview_src)))
 
 
 def manifest_states(project: Path) -> dict[str, list[str]]:
@@ -81,7 +102,7 @@ def _build_bundle(project: Path, tmp: Path, timeout: int) -> tuple[bool, str]:
         return False, "design-preview/node_modules가 없습니다(먼저 프리뷰 빌드가 필요)"
     (dst / "node_modules").symlink_to(nm.resolve(), target_is_directory=True)
     (dst / MEASURE_ENTRY).write_text(ENTRY_HTML, encoding="utf-8")
-    (dst / MEASURE_TSX).write_text(ENTRY_TSX, encoding="utf-8")
+    (dst / MEASURE_TSX).write_text(entry_tsx(dst / "src"), encoding="utf-8")
     if not any((dst / f).is_file() for f in ("vite.config.ts", "vite.config.js", "vite.config.mjs")):
         return False, "프리뷰 vite 설정 파일이 없습니다"
     cfg = CONFIG_TS if (dst / "vite.config.ts").is_file() else CONFIG_TS.replace("'./vite.config'", "'./vite.config.js'" if (dst / "vite.config.js").is_file() else "'./vite.config.mjs'")

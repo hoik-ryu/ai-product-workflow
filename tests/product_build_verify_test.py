@@ -308,6 +308,30 @@ def flow(root: Path) -> None:
           and st(d)["batches"]["B3"]["status"] == "failed", [x[1].get("status") for x in outs])
     code, out = pb(d, "resume", "--batch", "B3")
     check("F16 한도 초과 후 사용자 결정 없이 재개 불가", code == 2 and out.get("error") == "failed_needs_decision", out)
+    # --reverify(제출 후 검증만 실패한 배치를 코드 재개 없이 '검증 필요'로): 사본에서 확인하고 원래 흐름은 그대로
+    d2 = Path(tempfile.mkdtemp(prefix="pb-reverify-")) / "p"
+    shutil.copytree(d, d2, symlinks=True)
+    code, out = pb(d2, "resume", "--batch", "B3", "--reverify")
+    check("F16a --reverify도 사용자 결정(--retry-failed --note) 없이는 불가", code == 2 and out.get("error") == "failed_needs_decision", out)
+    planning = next(iter(sorted((d2 / "docs/planning").glob("*.md"))))
+    keep = planning.read_text(encoding="utf-8")
+    planning.write_text(keep + "\n<!-- 무단 수정 -->\n", encoding="utf-8")
+    code, out = pb(d2, "resume", "--batch", "B3", "--retry-failed", "--reverify", "--note", "사용자 결정: 재검증만")
+    check("F16b 승인 범위 밖 보호 경로 변경은 --reverify에서도 차단", code == 2 and out.get("error") in ("protected_path_changed", "inputs_changed", "planning_not_approved"), out)
+    planning.write_text(keep, encoding="utf-8")
+    before = st(d2)["batches"]["B3"]["run"]["failure"]
+    code, out = pb(d2, "resume", "--batch", "B3", "--retry-failed", "--reverify", "--note", "사용자 결정: 재검증만")
+    s2 = st(d2)["batches"]["B3"]
+    check("F16c --reverify: verify_failed로만 복구(verified·approved 아님), 잠금 없음, 실패 기록 보존",
+          code == 0 and out.get("status") == "verify_failed" and s2["status"] == "verify_failed" and not out.get("lock_id")
+          and s2["run"]["failure_history"][-1] == before and s2["run"]["failure"] is None
+          and s2["run"]["attempts"]["verify"]["total"] >= 3, out)
+    code, out = pb(d2, "verify", "--batch", "B3")
+    check("F16d 복구 뒤에도 필수 검증을 다시 거치고 기준 미달이면 verified가 아님", code == 2 and out["status"] == "verify_failed"
+          and st(d2)["batches"]["B3"]["status"] == "verify_failed", out.get("status"))
+    code, out = pb(d2, "resume", "--batch", "B3", "--retry-failed", "--reverify", "--note", "x")
+    check("F16e --reverify는 failed가 아닌 배치에 쓸 수 없음", code == 2 and out.get("error") in ("reverify_not_applicable", "nothing_to_resume"), out)
+    shutil.rmtree(d2.parent, ignore_errors=True)
     code, out = pb(d, "resume", "--batch", "B3", "--retry-failed", "--note", "사용자 결정: 실패 우선 테스트로 증거 보강")
     lock = out.get("lock_id")
     # 회귀: 이 배치 작업 중 B1 코드를 깨뜨리면(범위 밖) 확인 실행에서 B1이 회귀로 표시됨

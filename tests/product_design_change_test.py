@@ -2,7 +2,7 @@
 """/product-design 변경 요청(CR)·승인 패치(Amendment) M1 테스트(자체 완결형).
 
 범위(M1): A–E 분류(읽기 전용 change plan), Type B CR 실행(패치 체인·유효 승인 기준), 안전성(잠금·stale·체인 무결성·Worktree 충돌 감지).
-Type C 부분 승인(M2)·Worktree 간 자동 병합(M3)은 구현 대상이 아니므로 여기서 PASS로 표시하지 않습니다(차단·안내만 확인).
+Type C는 M1 CR로 실행하지 않고 /product-change 변경 패키지로 안내합니다(실행은 tests/product_change_test.py S2). Worktree 간 자동 병합(M3)은 구현 대상이 아니므로 차단·안내만 확인합니다.
 
 - 승인 상태는 모두 실제 CLI로 만듭니다(tests/change_fixture.py). 모든 승인·확인 문장은 이 임시 프로젝트 안의 시뮬레이션입니다.
 - design.json을 손으로 고치는 경우는 체인 조작·병합 충돌을 흉내 낼 때뿐입니다(그 자체가 시험 대상).
@@ -130,8 +130,14 @@ def classification(d: Path, root: Path) -> None:
         code, o = pd(d, "change", "plan", "--request", req(root, f"one-{cid}", [x for x in items if x["id"] == cid]))
         check(f"K3 단일 화면이라도 계약 성격으로 판정: {cid} → {want}", o["type"]["minimum"] == want, o.get("type"))
     code, o = pd(d, "change", "plan", "--request", req(root, "c-route", [x for x in items if x["id"] == "C5"]))
-    check("K4 Type C는 M1에서 분류·영향 표시만, 정식 경로(reopen) 안내", o["route"]["type"] == "C" and "M2" in o["route"]["m1"]
-          and "reopen --stage design_direction" in o["route"]["steps"][0] and o["scope"]["screens"] == ["SCR-001"], o.get("route"))
+    rt = o["route"]
+    check("K4 Type C는 M1 CR로 실행하지 않고 /product-change 변경 패키지 안내(단계 재승인·재탐색 없음, 승인 2회), reopen은 대체 경로로만",
+          rt["type"] == "C" and rt["owner"] == "/product-change" and rt["path"] == "change_package"
+          and "재승인 없음" in rt["design_approval"] and "필요 없음" in rt["exploration"]
+          and any("approve-contract" in x for x in rt["steps"]) and any("approve-final" in x for x in rt["steps"])
+          and any("change open --package" in x for x in rt["steps"]) and not any("reopen" in x for x in rt["steps"])
+          and "reopen --stage design_direction" in rt["fallback"] and o["scope"]["screens"] == ["SCR-001"]
+          and len(o["required"]["approvals"]) == 2 and any("contract_scope_exceeded" in v for v in o["required"]["verification"]), rt)
 
 
 # ================================================================ 2. 꺼진 상태·v1 호환
@@ -292,8 +298,9 @@ def smapsh(d: Path, root: Path) -> None:
     o = plan_base("sm2", [{"id": "SM2", "summary": "배너 원본 구도·비율 복원", "facts": [{"kind": "asset_patch", "asset": asset_now, "op": "ratio", "successor": True, "to": wide}]}])
     px = [x.get("pixels", {}).get("verdict") for x in o["diff"] if x.get("pixels")]
     out_all["SM2"] = o["type"]["minimum"]
-    check("SM2 배너 구도·비율 변경(실제 이미지 48×16 → 64×16) → Type C, 영향 화면 SCR-001만, M1은 정식 경로 안내", o["type"]["minimum"] == "C"
-          and px == ["dimensions_changed"] and o["scope"]["screens"] == ["SCR-001"] and "M2" in o["route"]["m1"], o.get("type"))
+    check("SM2 배너 구도·비율 변경(실제 이미지 48×16 → 64×16) → Type C, 영향 화면 SCR-001만, 변경 패키지 경로 안내", o["type"]["minimum"] == "C"
+          and px == ["dimensions_changed"] and o["scope"]["screens"] == ["SCR-001"] and o["route"]["owner"] == "/product-change"
+          and "reopen" in o["route"]["fallback"], o.get("type"))
     T.G(d, "checkout", "--", DD, F.BANNER, "design-profile/assets.json")
     (d / f"design-profile/assets/{wide}.png").unlink()
     T.G(d, "checkout", "--", ".ai-workflow/design.json")
@@ -335,6 +342,11 @@ def insufficient(d: Path, root: Path) -> None:
         check(f"T5b 권한 변경을 Type {t}로 → change_type_insufficient(최소 E)", code == 2 and out["error"] == "change_type_insufficient" and out["minimum"] == "E", out)
     code, out = pd(d, "change", "open", "--request", r, "--scope-note", "권한 바꿔줘")
     check("T5c Type E는 /product-start 재검토 경로 안내(디자인 CR 없음)", code == 2 and out["error"] == "change_type_not_executable" and out["route"]["owner"] == "/product-start", out)
+    n_cr = len((F.state(d).get("changes") or {}).get("items") or {})
+    code, out = pd(d, "change", "open", "--request", req(root, "c-layout", [{"id": "R1", "summary": "버튼 위치 변경", "facts": [{"kind": "placement", "screen": "SCR-001"}]}]), "--scope-note", "배치 바꿔줘")
+    check("K4b Type C로 change open → change_type_not_executable(CR 미생성), 메시지·route가 변경 패키지를 안내",
+          code == 2 and out["error"] == "change_type_not_executable" and "/product-change" in out["message"] and out["route"]["owner"] == "/product-change"
+          and out.get("type") == "C" and n_cr == len((F.state(d).get("changes") or {}).get("items") or {}), out)
     # 실제 파일이 요청보다 큰 변경: 비율 변경(크기 다름)
     code, out = pd(d, "change", "open", "--request", mask_request(root, "ratio", "AST-002"), "--scope-note", "가장자리만 다듬어줘")
     cid = out["id"]

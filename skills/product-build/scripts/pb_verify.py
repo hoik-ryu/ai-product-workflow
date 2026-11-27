@@ -405,34 +405,86 @@ def classify_e3(records: list[dict], current: dict | None, batch: str, project: 
     regression_fix: 통과하던 테스트가 '다른 배치'의 실행에서 실패(회귀 감지)한 뒤, 이전과 다른 코드로 고쳐 통과
     fault_injection: 통과하던 테스트를 같은 배치에서 실패시켰다가 다시 통과(정상 코드 훼손·복구) — E3 아님
     test_changed: 실패와 통과 사이에 테스트 파일이 바뀜 — E3 아님"""
+    kind, why, _ = classify_e3_record(records, current, batch, project)
+    return kind, why
+
+
+def classify_e3_record(records: list[dict], current: dict | None, batch: str, project: Path | None = None) -> tuple[str | None, str, dict | None]:
+    """classify_e3와 같고, 그 판정의 근거가 된 실패 기록도 돌려줍니다(증거 고정용).
+    고정된 실패 기록(pin_kind 있음)은 고정 당시의 판정을 쓰되, 무효화 조건(테스트 변경·약화, 같은 코드로 통과)은 지금 다시 검사합니다.
+    일반 이력에서 앞쪽 통과 기록이 잘려 나가도 결함 주입이 '실패 우선(fix)'으로 바뀌지 않게 하기 위함입니다."""
     if not current or current["status"] != "passed":
-        return None, ""
+        return None, "", None
     valid = [r for r in records if r.get("valid")]
     kinds = []
     for i, r in enumerate(valid):
         if r["status"] not in ("failed", "error") or r.get("code") is None:
             continue
         if test_weakened_or_changed(project, r, current):
-            kinds.append(("test_changed", "실패와 통과 사이에 테스트의 기존 줄이 바뀌거나 약화 표기가 추가됨"))
+            kinds.append(("test_changed", "실패와 통과 사이에 테스트의 기존 줄이 바뀌거나 약화 표기가 추가됨", r))
             continue
         if r.get("code") == current.get("code"):
-            kinds.append(("fault_injection", "실패 때와 같은 코드로 통과(코드 수정 없음)"))
+            kinds.append(("fault_injection", "실패 때와 같은 코드로 통과(코드 수정 없음)", r))
+            continue
+        if r.get("pin_kind") in PINNABLE:
+            kinds.append((r["pin_kind"], (r.get("pin_why") or "") + " (고정된 증거)", r))
             continue
         before = [x for x in valid[:i] if x["status"] == "passed"]
         if not before:
-            kinds.append(("fix", "테스트가 처음 실패 → 코드 수정 → 통과"))
+            kinds.append(("fix", "테스트가 처음 실패 → 코드 수정 → 통과", r))
         elif r.get("batch") != batch:
             if current.get("code") in {x.get("code") for x in before}:
-                kinds.append(("fault_injection", "회귀 후 이전과 같은 코드로 되돌려 통과(수정이 아니라 복구)"))
+                kinds.append(("fault_injection", "회귀 후 이전과 같은 코드로 되돌려 통과(수정이 아니라 복구)", r))
             else:
-                kinds.append(("regression_fix", f"다른 배치({r.get('batch')}) 실행에서 회귀 감지 → 수정 → 통과"))
+                kinds.append(("regression_fix", f"다른 배치({r.get('batch')}) 실행에서 회귀 감지 → 수정 → 통과", r))
         else:
-            kinds.append(("fault_injection", "통과하던 테스트를 같은 배치에서 실패시켰다가 다시 통과(결함 주입·복구)"))
+            kinds.append(("fault_injection", "통과하던 테스트를 같은 배치에서 실패시켰다가 다시 통과(결함 주입·복구)", r))
     for want in ("fix", "regression_fix", "fault_injection", "test_changed"):
-        for k, why in kinds:
+        for k, why, r in kinds:
             if k == want:
-                return k, why
-    return None, ""
+                return k, why, r
+    return None, "", None
+
+
+# 승인 근거 증거 고정: 검증(verified)에 쓰인 실패 기록과 그 통과 기록을 일반 이력(HISTORY_KEEP)과 따로 보관합니다.
+# 고정 기록도 판정 때 같은 무효화 규칙을 거치며(테스트 변경·약화, 같은 코드), 이미 잘려 나간 기록은 만들지 않습니다.
+PINNABLE = ("fix", "regression_fix", "fault_injection")
+
+
+def case_records(h: dict) -> list[dict]:
+    """판정용 기록: 일반 이력 + 고정된 실패 기록(같은 실행은 한 번), 시각 순."""
+    recs = list(h.get("records") or [])
+    seen = {(r.get("run"), r.get("status")) for r in recs}
+    for p in h.get("pinned") or []:
+        red = p.get("red") or {}
+        if (red.get("run"), red.get("status")) not in seen:
+            recs.append(dict(red, pin_kind=p.get("kind"), pin_why=p.get("why")))
+    return sorted(recs, key=lambda r: r.get("at") or "")
+
+
+def pin_evidence(hist: dict, ev: dict, run: dict, at: str) -> list[dict]:
+    """verified로 판정된 AC의 근거(실패 기록 + 이번 통과 실행)를 사례별로 고정합니다. 이미 고정된 쌍은 다시 넣지 않습니다.
+    결함 주입 근거는 사용자 인정으로 verified가 된 경우에만 고정하고 kind 'fault_injection' 그대로 남깁니다(실제 결함 수정과 구분)."""
+    added = []
+    for ac, rec in ev.items():  # evaluate() 결과: {AC: 판정}
+        if rec.get("status") != "verified":
+            continue
+        fi_used = "결함 주입" in (rec.get("reason") or "")
+        for e in rec.get("evidence") or []:
+            if e.get("type") not in PINNABLE or (e["type"] == "fault_injection" and not fi_used) or not e.get("red_run"):
+                continue
+            h = hist.get(e["case"]) or {}
+            red = next((r for r in (h.get("records") or []) if r.get("run") == e["red_run"] and r.get("status") in ("failed", "error")), None)
+            if red is None:
+                continue  # 이미 일반 이력에서 사라졌거나 고정 기록에서 온 근거: 새로 만들지 않음
+            pins = h.setdefault("pinned", [])
+            if any((p.get("red") or {}).get("run") == red.get("run") for p in pins):
+                continue
+            ok_rec = next((r for r in (h.get("records") or []) if r.get("run") == run["run_id"]), None)
+            pins.append({"ac": ac, "kind": e["type"], "why": e.get("why"), "batch": run.get("batch"), "at": at,
+                         "red": {k: v for k, v in red.items() if not k.startswith("pin_")}, "green": ok_rec})
+            added.append({"case": e["case"], "ac": ac, "kind": e["type"], "red_run": red.get("run"), "green_run": run["run_id"]})
+    return added
 
 
 def evaluate(acs: list[str], targets: dict, run: dict, hist: dict, mentioned: set[str], tree: str,
@@ -458,13 +510,14 @@ def evaluate(acs: list[str], targets: dict, run: dict, hist: dict, mentioned: se
             level, types = "E2", []
             cur_code = run.get("code_only_tree")
             for c in mine:
-                recs = hist.get(c["id"], {}).get("records", [])
-                kind, why = classify_e3(recs[:-1] if recs and recs[-1].get("run") == run["run_id"] else recs,
-                                        {"status": c["status"], "code": cur_code, "test_sha": c.get("test_sha"), "file": c.get("file"),
-                                         "func": case_func(c["id"])},
-                                        run["batch"], project)
+                recs = [r for r in case_records(hist.get(c["id"], {})) if r.get("run") != run["run_id"]]  # 일반 이력 + 고정 증거(이번 실행 제외)
+                kind, why, red = classify_e3_record(recs,
+                                                    {"status": c["status"], "code": cur_code, "test_sha": c.get("test_sha"), "file": c.get("file"),
+                                                     "func": case_func(c["id"])},
+                                                    run["batch"], project)
                 if kind:
-                    types.append({"case": c["id"], "type": kind, "why": why})
+                    types.append({"case": c["id"], "type": kind, "why": why, "red_run": (red or {}).get("run"),
+                                  "pinned": bool((red or {}).get("pin_kind"))})
                 if kind in ("fix", "regression_fix"):
                     level = "E3"
             rec.update(level=level, evidence=types)

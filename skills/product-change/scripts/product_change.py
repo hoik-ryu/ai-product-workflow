@@ -656,7 +656,8 @@ def cmd_regression(project: Path, a) -> None:
     for bid, x in sorted((b.get("batches") or {}).items()):
         if not ((x.get("run") or {}).get("submitted")) or x["status"] in ("in_progress", "paused", "failed"):
             continue
-        code, out = run(PB, "verify", "--project", project, "--batch", bid)
+        extra = ["--available", a.available] if getattr(a, "available", "") else []
+        code, out = run(PB, "verify", "--project", project, "--batch", bid, *extra)
         res[bid] = {"code": code, "status": build_state(project)["batches"][bid]["status"],
                     "run_id": ((build_state(project)["batches"][bid].get("verification")) or {}).get("run_id"), "error": out.get("error")}
     ok = all(v["status"] in ("verified", "approved") and v["code"] == 0 for v in res.values())
@@ -735,6 +736,14 @@ def final_bundle(project: Path, pk: dict) -> dict:
             problems.append(f"계약의 배치 {bid}가 구현 상태에 없습니다")
             continue
         ver = x.get("verification") or {}
+        # 한 번도 구현하지 않은(planned, 제출 기록 없음) 배치는 검증할 코드가 없음: 바꾸지 않은 근거(review)가 있을 때만 '미구현'으로 기록.
+        # regression도 제출되지 않은 배치는 건너뜀(같은 기준). 근거가 없으면 기존처럼 막음
+        if x["status"] == "planned" and not (x.get("run") or {}).get("submitted") and bid not in set(c["build"].get("rework") or []):
+            if bid in reviewed:
+                batches[bid] = {"status": "planned", "not_implemented": True, "review": reviewed[bid] if isinstance(reviewed, dict) else True}
+                continue
+            problems.append(f"{bid}는 구현되지 않은 배치입니다. 바꾸지 않는 근거를 review --unit {bid}로 남기거나 계약에서 뺍니다")
+            continue
         if x["status"] not in ("verified", "approved") or ver.get("package") != pk["id"]:
             problems.append(f"{bid}가 패키지 기준으로 검증되지 않았습니다(상태 {x['status']}, 기준 {ver.get('package')})")
         batches[bid] = {"status": x["status"], "run_id": ver.get("run_id"), "digest": ver.get("digest"), "package": ver.get("package"),
@@ -999,6 +1008,8 @@ def main() -> None:
             s.add_argument("--unit", required=True)
         if name == "abandon":
             s.add_argument("--restore", action="store_true")
+        if name == "regression":  # 검증 단계가 요구하는 환경(예: test-pg)을 /product-build verify에 그대로 전달
+            s.add_argument("--available", default="")
     a = ap.parse_args()
     project = Path(a.project).resolve()
     try:

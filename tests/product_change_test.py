@@ -235,6 +235,13 @@ def s2_layout(d, root):
     c = P.contract(root, "c2", purpose="대진 화면(SCR-002) 제목 영역 배치 정리", policy="기능·정보·흐름은 그대로, 제목 영역 표현만",
                    ids={"add": [], "modify": [], "remove": []}, keep=["AC-003", "AC-004"], design={"units": [], "screens": ["SCR-002"], "files": []},
                    build={"rework": [], "regression": ["B2"]}, files=[], tests={"remove": [], "modify": [], "add": []}, risky_ops=[])
+    rq = root / "c2-request.json"  # 프로젝트 밖
+    rq.write_text(json.dumps({"schema": "design-change-request/v1", "items": [
+        {"id": "R1", "summary": "대진 화면 제목 영역 상단 고정", "facts": [{"kind": "layout", "screen": "SCR-002"}]}]}, ensure_ascii=False))
+    code, cp = pd(d, "change", "plan", "--request", rq)
+    check("S2-0 디자인만 바뀌는 요청 → Type C, 안내 경로는 /product-change 변경 패키지(단계 재승인·재탐색 없음)",
+          code == 0 and cp["type"]["minimum"] == "C" and cp["route"]["owner"] == "/product-change" and cp["scope"]["screens"] == ["SCR-002"], cp.get("route"))
+    appr0 = approvals(d)
     P.ok(pc, d, "open", "--contract", c)
     P.ok(pc, d, "approve-contract", "--id", "CP-002", "--note", asks.user("contract", "대진 화면 제목 배치만 바꾸는 계약 승인(시뮬레이션)"))
     P.ok(pd, d, "change", "open", "--package", "CP-002")
@@ -253,6 +260,8 @@ def s2_layout(d, root):
     ys = (d / ".ai-workflow/state.yaml").read_text()
     check("S2b 기획 변경 없는 패키지: 기획 단계 건너뜀(r2 유지), 디자인 패치·B2 승인 승계, 승인 2회", code == 0 and out["status"] == "approved"
           and "    revision: 2" in ys and F.state(d)["changes"]["chain"][-1]["package"] == "CP-002" and asks.n == 2, out)
+    check("S2c Type C 처리 후 Design Direction·Preview 등 디자인 단계 승인 기록·revision 불변(전체 재승인 없음), 디자인 check 일관",
+          approvals(d) == appr0 and pd(d, "check")[0] == 0, {k: v.get("revision") for k, v in approvals(d).items()})
     P.BCcommit(d, "CP-002 (user)")
     s.write_text(s.read_text() + "\n// 승인 후 수정\n")
     code, out = pd(d, "check")

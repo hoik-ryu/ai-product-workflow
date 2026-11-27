@@ -96,7 +96,7 @@ disable-model-invocation: true
 ## 5단계 — 수정 요청과 재검토
 
 - 제출 후 수정 요청: `reopen --stage <s> --reason "<요청 요약>"` → 수정할 파일을 고치고, 그 단계의 **모든 산출물** front matter `revision`을 준비 중 revision으로 올린 뒤 각각 `done` → 다시 제출. UX 설계에서 화면 구성(IA 라우트 표와 화면 ID)이 바뀌지 않았다면 구조 확인을 다시 받지 않아도 됩니다(스크립트가 판단).
-- 승인 후 변경: 영향(하위 단계 승인 무효화)을 먼저 설명하고 확인을 받은 뒤 `reopen`.
+- 승인 후 변경: 변경 요청 기능을 켠 v2 프로젝트는 먼저 5-1단계(`change plan`)로 유형을 봅니다. B는 CR, C는 `/product-change` 변경 패키지로 처리해 단계 재승인을 피합니다. 그 밖(D·E, 또는 기능을 켜지 않은 프로젝트)은 영향(하위 단계 승인 무효화)을 먼저 설명하고 확인을 받은 뒤 `reopen`.
 - 이전 UX 결정 변경: `refs --id UXD-###`로 영향 화면을 보고합니다.
 - 디자인 변경 요청은 먼저 `impact --design`으로 분류합니다(① 정보·행동, ② 토큰 의미·이름, ③ 테마 값, ④ 시각 표현, ⑤ 구현 메모). 결과의 `effective_stage`·`reapproval_stages`를 사용자에게 보여 주고, `needs_review`·`conditional` 항목은 사용자 판단을 받습니다. 목표 단계가 아직 없는 유형(`target_available: false`)은 없다고 설명하고, 지금 적용되는 단계로 처리합니다. 분류 결과만으로 `reopen`하지 않습니다(사용자 확인 필요).
 - 작업 트리의 디자인 파일 변경은 `impact --design`(기본 기준 `HEAD`)으로 파일·토큰 이름 기준 분류를 볼 수 있습니다.
@@ -110,7 +110,7 @@ disable-model-invocation: true
 3. 유형별 진행
    - **A**: 디자인 승인 유지. 승인 산출물(docs/design·design-preview·자산·테마·기획)은 건드리지 않고 /product-build(guard·verify)로 진행합니다.
    - **B**: `pre_confirmation_required`가 false이고 요청이 구체적이면 **사용자의 요청 원문**을 `--scope-note`로 넘겨 `change open` 하고 바로 작업합니다(추가 질문 없음). 오탈자는 `{"kind":"typo","doc","from","to"}`, 프리뷰 렌더링 보정은 `{"kind":"render_fix","target":"preview","screen" 또는 "files"}`처럼 대상을 구체적으로 적으면 실제 차이로 판정합니다. true이면 그 이유를 보여 주고 확인 문장을 받아 `--pre-confirm`으로 넘깁니다.
-   - **C**: 영향 화면과 함께 "부분 승인은 아직 없어 기존 정식 경로(`reopen --stage …`)로 진행해야 한다"고 설명하고 확인을 받습니다(M2 예정).
+   - **C**: `change open`(M1 CR)으로 실행하지 않고 **`/product-change` 변경 패키지**로 진행합니다(`route.steps`). 계약은 기획 ID를 비우고 디자인 범위(영향 화면·바뀌는 VD·CMP 등)와 회귀 배치만 적습니다. 사용자 승인은 계약(1차)·최종 통합(2차) 2회이고, Design Direction·Preview 단계 재승인과 디자인 재탐색은 요구하지 않습니다(최종 승인 후 패치로 기록). 영향 화면과 함께 이 경로를 설명합니다. 변경 패키지를 쓸 수 없는 경우(디자인 변경 요청·패키지 기능을 켜지 않음 등)에만 `route.fallback`(reopen 정식 경로)을 안내하고 확인을 받습니다.
    - **D·E**: 기존 `reopen`·`/product-start` 재검토 경로를 안내합니다.
    - 사용자가 더 엄격한 유형을 원하면 그대로 따릅니다. 더 낮은 유형은 엔진이 거부합니다(`change_type_insufficient`).
 4. Type B 작업: 범위 안의 파일만 고칩니다. 자산 보정은 새 자산을 `explore-asset add --derived-from <승인 자산>`으로 등록하고 07 VD 관련의 ID와 프리뷰 사본을 바꾸거나(후속 자산), 선언한 자산을 `explore-asset replace`합니다(제자리). 결과의 `rights.status`가 `inherited`면 권리 확인을 따로 묻지 않습니다(최종 확인 때 함께 보여 줌). `confirmation_required`면 사유를 보여 주고 `explore-asset confirm`(사용자 문장)이 필요합니다. 사용자 문장을 지어내거나 다른 확인을 권리 확인으로 넓혀 쓰지 않습니다.

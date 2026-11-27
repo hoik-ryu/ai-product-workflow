@@ -19,6 +19,7 @@ disable-model-invocation: true
 ## 언제 쓰는가
 
 - 기획·디자인·구현 계획이 **이미 승인된** 제품에서 요구사항을 바꿀 때(AC 폐기·수정·추가, 정책 변경).
+- 기획 변경 없이 **디자인만** 바꿀 때(Type C: 버튼 위치·크기·스타일, 기능 유지 레이아웃, VD 변경 등). `product_design.py change plan`이 C로 판정하고 이 경로를 안내합니다(`route.owner: /product-change`). 계약의 `ids`는 비우고 `design.screens`·`design.units`·`build.regression`만 적습니다. 기획 단계는 건너뛰며, Design Direction·Preview 단계 재승인이나 디자인 재탐색 없이 최종 승인 후 패치로 기록됩니다.
 - 신규 제품의 첫 기획·디자인·구현은 기존 Skill(`/product-start`·`/product-design`·`/product-build`)의 단계별 승인 경로를 그대로 씁니다. 이 Skill은 그 경로를 바꾸지 않습니다.
 - 기능을 켜지 않은 프로젝트(`enable` 전)는 기존 재개정 경로 그대로입니다.
 

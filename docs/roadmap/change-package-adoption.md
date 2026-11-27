@@ -9,6 +9,8 @@ M1 변경 요청 적용 절차(`m1-change-request-adoption.md`)를 이어서 씁
 
 ## 1. 켜기 전 확인
 
+Skill 연결(개인 설정, Git 제외): 다른 Skill과 같은 엔진 경로로 `ln -s "$ENGINE/skills/product-change" .claude/skills/product-change`. 링크가 없어도 스크립트를 경로로 실행할 수는 있지만 `/product-change` 명령과 Skill 안내를 쓰려면 연결합니다.
+
 ```bash
 python3 $ENGINE/skills/product-change/scripts/product_change.py enable --project .   # 계획만(쓰지 않음)
 ```

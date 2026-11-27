@@ -832,8 +832,17 @@ def route(t: str, sc: dict) -> dict:
                           "change submit", "사용자에게 전후 비교를 보여 주고 최종 확인 문장 받기", "change approve --note \"<최종 확인 문장>\""]}
     if t == "C":
         st_ = "design_direction" if (sc.get("assets") or any(d.endswith("07-design-direction.md") for d in sc.get("docs") or [])) else "ux_spec"
-        return {"type": "C", "owner": "/product-design", "m1": "M1은 분류·영향 표시만 합니다. 부분 승인은 M2 예정입니다.",
-                "steps": [f"기존 정식 경로: reopen --stage {st_} → 수정 → submit → 재승인(하위 단계 재승인 포함)"],
+        scr = ", ".join(sc.get("screens") or []) or "영향 화면 전체(범위 불명)"
+        return {"type": "C", "owner": "/product-change", "path": "change_package",
+                "m1": "M1 변경 요청(change open)은 Type B만 실행합니다. Type C는 /product-change 변경 패키지(디자인 범위 계약)로 처리합니다.",
+                "design_approval": "유지(Design Direction·Preview 단계 재승인 없음, 최종 통합 승인 후 패치(Amendment kind package)로 기록)",
+                "exploration": "필요 없음(단계 제출이 아니므로 디자인 탐색 의무가 적용되지 않음)",
+                "steps": ["product_change.py status(꺼져 있으면 enable 계획 → 사용자 동의 문장 → enable --confirm --note)",
+                          f"계약: ids는 비우고 design.screens({scr})·design.units(바뀌는 VD·CMP 등)·build.regression(영향 화면 배치) → product_change.py open --contract",
+                          "product_change.py approve-contract --note \"<사용자 1차 승인 원문>\"",
+                          "product_design.py change open --package CP-### → 계약 범위 안에서 수정 → change verify(영향 화면 실측) → change submit",
+                          "영향 배치 verify → product_change.py regression → submit-final → approve-final --note \"<사용자 2차 승인 원문>\"(finalize가 공식 기록)"],
+                "fallback": f"변경 패키지를 쓸 수 없을 때만(기능 미사용·v1 등): reopen --stage {st_} → 수정 → submit → 재승인(하위 단계 재승인 포함)",
                 "affected_screens": sc.get("screens")}
     if t == "D":
         return {"type": "D", "owner": "/product-design", "steps": ["기존 경로: reopen --stage ux_spec(토큰·공통 컴포넌트·IA) 또는 v2 테마 규칙(테마 값만이면 프리뷰만)",
@@ -852,7 +861,10 @@ def required(t: str, sc: dict, diff: dict) -> dict:
         ver.append("/product-build: 영향 화면을 가진 배치만 재검증(stale)")
         return {"approvals": ["사용자 최종 패치 확인 1회(change approve --note)"], "verification": ver}
     if t == "C":
-        return {"approvals": ["(M2) 영향 단위 부분 승인 — M1에서는 기존 단계 재승인"], "verification": ["영향 화면·상태 프리뷰"]}
+        return {"approvals": ["변경 계약 1차 승인(product_change.py approve-contract --note)",
+                              "최종 통합 2차 승인(product_change.py approve-final --note) — Design Direction·Preview 단계 재승인 없음"],
+                "verification": ["계약 범위 검사(contract_scope_exceeded)", "프리뷰 빌드·영향 화면 실측(change verify)",
+                                 "영향 화면 배치 회귀(product_change.py regression)"]}
     if t == "D":
         return {"approvals": ["변경된 계약이 있는 단계부터 재승인"], "verification": ["영향 화면 전체 프리뷰"]}
     return {"approvals": ["영향받는 최초 상위 단계(planning)부터 재승인"], "verification": ["하위 문서·구현 재검증"]}
@@ -1353,7 +1365,8 @@ def _open_cmd(project: Path, st: dict, a) -> None:
               minimum=t["minimum"], reasons=t["reasons"])
     if selected not in M1_EXECUTABLE:
         msg = {"A": "Type A는 디자인 변경 요청 없이 /product-build로 진행합니다(승인 산출물 불변).",
-               "C": "Type C 부분 승인은 M2 예정입니다. 지금은 기존 정식 승인 경로를 씁니다.",
+               "C": "Type C는 M1 변경 요청(change open)으로 실행하지 않습니다. /product-change 변경 패키지(디자인 범위 계약)로 진행하면 "
+                    "Design Direction·Preview 단계 재승인과 디자인 재탐색 없이 사용자 승인 2회(계약·최종)로 반영됩니다. route.steps를 따르세요.",
                "D": "Type D는 기존 reopen·재승인 경로를 씁니다.", "E": "Type E는 /product-start 재검토(T9)부터 진행합니다."}[selected]
         block("change_type_not_executable", msg, type=selected, route=route(selected, res["scope"]))
     pre = (a.pre_confirm or "").strip()

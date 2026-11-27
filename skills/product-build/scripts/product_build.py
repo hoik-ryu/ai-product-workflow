@@ -47,7 +47,7 @@ from pb_exec import (  # noqa: E402
 )
 from pb_verify import (  # noqa: E402
     batch_scope_files, batch_verdict, code_files, deps_affecting, deps_tree, evaluate, load_run, mentions_in_tests, run_steps, step_summary,
-    tracked_files, tree_hash, update_history,
+    tracked_files, tree_hash, update_history, pin_evidence,
 )
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
@@ -567,6 +567,61 @@ def cmd_adopt(a) -> None:
     emit(out)
 
 
+def package_authorized_paths(project: Path) -> set[str]:
+    """진행 중(executing) 변경 패키지가 승인 범위로 바꾼 보호 경로(읽기 전용 판정):
+    기획·계획 제안(snapshot-planning·snapshot-plan)의 해시와 지금 내용이 같은 파일, 제출된 패키지 디자인 변경(awaiting_confirmation)의
+    결과 해시와 지금 내용이 같은 파일, 패키지 진행 중 소유 Skill CLI가 쓰는 상태·계약 파일. 내용이 제안·제출과 다르면 포함하지 않습니다."""
+    pkg = package_scope(project)
+    if not pkg or pkg["status"] != "executing":
+        return set()
+    ok: set[str] = set()
+    for prop in (pkg.get("planning_proposal") or {}, pkg.get("plan_proposal") or {}):
+        for rel, h in (prop.get("hashes") or {}).items():
+            if h and sha_file(project / rel) == h:
+                ok.add(rel)
+    try:
+        dst = json.loads((project / ".ai-workflow/design.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        dst = {}
+    for cr in (((dst.get("changes") or {}).get("items")) or {}).values():
+        if not isinstance(cr, dict) or cr.get("package") != pkg["id"] or cr.get("status") != "awaiting_confirmation":
+            continue
+        for rel, pair in ((cr.get("submitted") or {}).get("file_transitions") or {}).items():
+            if isinstance(pair, list) and len(pair) == 2 and pair[1] and sha_file(project / rel) == pair[1]:
+                ok.add(rel)
+    ok |= {".ai-workflow/design.json", ".ai-workflow/change.json", f"docs/changes/{pkg['id']}.json", f"docs/changes/{pkg['id']}.md"}
+    return ok
+
+
+def ensure_package_batch(project: Path, st: dict, bid: str) -> bool:
+    """(변경 패키지) 승인된 패키지의 계획 제안(snapshot-plan 해시와 같은 계획 파일)에 새로 생긴 재작업 배치를 상태에 등록합니다.
+    새 배치는 원래 계획 승인 때만 상태에 생기는데, 패키지에서는 계획 승인이 최종 통합 승인 뒤 finalize에서 일어나므로
+    그 전에 재작업 배치를 실행·검증할 수 없었습니다. 등록 값은 계획 승인과 같은 계산(run_validate)이고 finalize의 계획 승인은
+    기존 배치 기록을 보존하므로 그대로 이어집니다. 패키지가 아니거나 계약 범위(rework) 밖이면 아무것도 하지 않습니다."""
+    if bid in st["batches"]:
+        return False
+    pkg = package_scope(project)
+    if not pkg or pkg["status"] != "executing" or bid not in pkg["rework"]:
+        return False
+    prop = pkg.get("plan_proposal") or {}
+    cur = plan_hashes(project)
+    if not prop or any(cur.get(k) != v for k, v in (prop.get("hashes") or {}).items()):
+        block("plan_proposal_mismatch", f"계획 파일이 변경 패키지 {pkg['id']}의 계획 제안(snapshot-plan)과 다릅니다. snapshot-plan을 다시 한 뒤 시작합니다.")
+    plan = read_plan(project)
+    v = run_validate(project, st, plan, profile_or_block(project), design_info(project))
+    v.pop("_model", None)
+    if not v["ok"] or bid not in v["derived"]["batches"]:
+        block("plan_invalid", f"계획 제안 검증에 실패해 {bid}를 등록하지 않았습니다.", errors=v.get("errors"))
+    x = v["derived"]["batches"][bid]
+    st["batches"][bid] = {"status": "planned", "approval": x["approval"], "approval_reasons": x["approval_reasons"],
+                          "requires_design": x["requires_design"], "design_path": x["design_path"], "waiver": x["waiver"],
+                          "depends_on": x["depends_on"], "ac_targets": x["ac_targets"], "plan_revision": st["plan"]["revision"],
+                          "package": pkg["id"]}
+    add_history(st, "batch", "package_batch_registered", None, f"{bid}: 변경 패키지 {pkg['id']} 계획 제안의 새 재작업 배치")
+    save_state(project, st)
+    return True
+
+
 def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[dict, dict, dict]:
     """실행 진입 공통 검사: 계획 승인·계획 파일 해시·입력 기준선·배치 존재·선행 배치·디자인 기준(waiver). (배치 상태, 계획 배치, dinfo)"""
     gate = require_planning(project)
@@ -586,6 +641,7 @@ def entry_checks(project: Path, st: dict, batch_id: str, prof: dict) -> tuple[di
     changes = baseline_changes(p["approved"]["inputs"], input_baseline(project, gate, dinfo))
     if changes:
         block("inputs_changed", "계획 승인 이후 입력 문서가 바뀌었습니다. check로 outdated를 기록한 뒤 계획을 갱신하세요.", changed=changes)
+    ensure_package_batch(project, st, batch_id)
     b = st["batches"].get(batch_id)
     if not b:
         block("unknown_batch", f"승인된 계획에 {batch_id} 배치가 없습니다.")
@@ -988,6 +1044,37 @@ def cmd_resume(a) -> None:
     pb_ = read_plan_batch(project, bid)
     entry_checks(project, st, bid, prof)  # 계획·입력 기준선이 그대로인지(바뀌었으면 재개하지 않음), 차단 정책 포함
     note = (a.note or "").strip()
+    # 0) 구현을 제출한 뒤 '최종 검증'만 연속 실패해 failed가 된 배치(예: 회귀 재검증): 코드 작업을 다시 열지 않을 때는
+    #    사용자 결정(--retry-failed --reverify --note)으로 '검증 필요(verify_failed)'로만 되돌립니다. --reverify가 없으면 기존처럼 구현을 다시 엽니다. 실패 횟수 한도 정책은 그대로이고,
+    #    실패 기록은 failure_history에 보존하며, verified·approved로는 절대 바꾸지 않습니다(다시 verify 필수).
+    #    마지막 체크포인트 이후 보호 경로 변경 중 진행 중인 변경 패키지가 승인 범위로 만든 것(기획·계획 제안 해시, 제출된 패키지 디자인 변경의
+    #    결과 해시, 소유 Skill CLI가 쓰는 상태 파일)만 구분해 허용하고, 그 밖의 보호 경로 변경은 기존처럼 차단합니다.
+    fail = run.get("failure") or {}
+    if getattr(a, "reverify", False) and not (b["status"] == "failed" and run.get("submitted") and fail.get("step") == "verify"):
+        block("reverify_not_applicable", "--reverify는 구현을 제출한 뒤 최종 검증만 연속 실패해 멈춘(failed) 배치에만 씁니다.")
+    if getattr(a, "reverify", False):
+        if not (a.retry_failed and note):
+            block("failed_needs_decision", "재시도 한도를 넘어 멈춘 배치입니다. 사용자 결정 없이 다시 시도하지 않습니다.", failure=fail,
+                  hint="사용자가 원인과 방향을 정하면 resume --retry-failed --note '<사용자 결정>'")
+        cp, prob = load_checkpoint(project, run)
+        if prob:
+            block("checkpoint_corrupt", f"체크포인트를 믿을 수 없습니다({prob}). 자동으로 고치지 않았습니다.")
+        delta = diff_states(cp.get("states", {}), states_now(project, run, _exclude(prof)))
+        protected = classify(project, run, delta, *_scope_of(pb_))["protected"]
+        allowed = package_authorized_paths(project)
+        unauthorized = [p for p in protected if p not in allowed]
+        if unauthorized:
+            block("protected_path_changed", "마지막 체크포인트 이후 보호 경로가 승인된 변경 패키지 범위 밖에서 바뀌었습니다. 되돌린 뒤 재개하세요.",
+                  paths=unauthorized)
+        run.setdefault("failure_history", []).append(fail)
+        run["attempts"].setdefault("verify", {"consecutive_failures": 0, "total": 0, "last": None})["consecutive_failures"] = 0
+        run["confirmations"].append({"kind": "retry_failed_verify", "note": note, "at": now(), "failure": fail,
+                                     "package_authorized_protected": sorted(p for p in protected if p in allowed)})
+        run["failure"] = None
+        b["status"] = "verify_failed"
+        add_history(st, "batch", "retry_verify", None, f"{bid}: 제출 이후 검증 실패 → 검증 필요로 복구(코드 재개 없음) — {note[:120]}")
+        save_state(project, st)
+        emit({"ok": True, "status": "verify_failed", "batch": bid, "next": f"verify --batch {bid}(필수 검증 다시 실행)"})
     # 1) 잠금
     lock = read_lock(project)
     takeover = None
@@ -1205,7 +1292,13 @@ def cmd_package_finalize(a) -> None:
     steps = []
     st = require_state(project)
     prop = bundle.get("plan")
-    if prop and (st["plan"].get("approved") or {}).get("hashes") != prop["hashes"]:
+    appr = st["plan"].get("approved") or {}
+    # 다시 실행(멱등): 이 패키지 최종 승인 문장으로 이미 계획을 승인했고 계획 JSON이 제안과 같으면 반영 끝
+    # (submit plan이 사람용 문서 00-implementation-plan.md를 다시 만들어 그 해시만 제안과 달라질 수 있음)
+    already = (st["plan"]["status"] == "approved" and str(appr.get("statement") or "").startswith(f"[{a.package} 최종 통합 승인")
+               and prop and (appr.get("hashes") or {}).get(PLAN_JSON_REL) == (prop.get("hashes") or {}).get(PLAN_JSON_REL)
+               and plan_hashes(project).get(PLAN_JSON_REL) == (prop.get("hashes") or {}).get(PLAN_JSON_REL))
+    if prop and not already and appr.get("hashes") != prop["hashes"]:
         if plan_hashes(project) != prop["hashes"]:
             block("plan_changed_since_final", "최종 승인 이후 구현 계획 파일이 바뀌었습니다. 공식화하지 않았습니다.")
         me = Path(__file__).resolve()
@@ -1229,12 +1322,17 @@ def cmd_package_finalize(a) -> None:
         st = require_state(project)
     prof = profile_or_block(project)
     pbs = _plan_batches(project)
-    recorded, carried = [], []
+    recorded, carried, skipped = [], [], []
     for bid, want in sorted((bundle.get("batches") or {}).items()):
         b = st["batches"].get(bid)
         if not b:
             block("package_batch_missing", f"{bid}가 구현 상태에 없습니다.")
         if any(x.get("package") == a.package and x.get("valid") for x in b.get("approvals") or []):
+            continue
+        if want.get("not_implemented"):
+            # 묶음에 '미구현(review 근거)'으로 기록된 배치: 지금도 구현 기록이 없을 때만 승인 없이 넘어감(승인할 구현이 없음)
+            if b["status"] != "planned" or (b.get("run") or {}).get("submitted"):
+                block("package_batch_changed", f"{bid}가 최종 승인 묶음 이후 구현 상태가 바뀌었습니다(상태 {b['status']}).")
             continue
         v = b.get("verification") or {}
         if b["status"] not in ("verified", "approved") or v.get("package") != a.package or v.get("run_id") != want.get("run_id"):
@@ -1246,7 +1344,11 @@ def cmd_package_finalize(a) -> None:
         if v.get("ui") or UR.ui_required(prof, pbs.get(bid)):  # UI 배치: 일반 최종 승인과 같은 검토 차단 조건(약화 없음)
             rv = _ui_review_now(project, st, prof, bid)
             if rv["blockers"]:
-                block("ui_approval_blocked", f"{bid} UI 최종 승인을 막는 항목이 있습니다(패키지에서도 같음).", blockers=rv["blockers"])
+                if bid in pkg["rework"]:
+                    block("ui_approval_blocked", f"{bid} UI 최종 승인을 막는 항목이 있습니다(패키지에서도 같음).", blockers=rv["blockers"])
+                # 회귀만 한 배치의 기존 차단 항목(예: 열린 UI 수정 요청)은 패키지가 풀 수 없음: 승인하지 않고(상태 그대로) 기록만 남김
+                skipped.append({"batch": bid, "blockers": rv["blockers"][:10]})
+                continue
             if (v.get("ui") or {}).get("evidence_digest") != want.get("ui_evidence"):
                 block("package_batch_changed", f"{bid}의 UI 검증 증거가 최종 승인 묶음과 다릅니다.")
             ui_rec = {"review_id": rv["review_id"], "by": "user(변경 패키지 최종 통합 승인)", "evidence_digest": (v.get("ui") or {}).get("evidence_digest")}
@@ -1262,7 +1364,11 @@ def cmd_package_finalize(a) -> None:
         b["status"] = "approved"
         add_history(st, "batch", "approved", None, f"{bid}: {a.package} 최종 통합 승인으로 기록")
     save_state(project, st)
-    emit({"ok": True, "status": "finalized", "package": a.package, "plan_steps": steps, "approved": recorded, "approval_carried": carried})
+    if skipped:
+        add_history(st, "batch", "package_approval_skipped", None, f"{a.package}: 기존 승인 차단 항목으로 승인하지 않은 회귀 배치 {', '.join(x['batch'] for x in skipped)}")
+        save_state(project, st)
+    emit({"ok": True, "status": "finalized", "package": a.package, "plan_steps": steps, "approved": recorded, "approval_carried": carried,
+          "approval_skipped": skipped})
 
 
 def effective_targets(b: dict) -> dict:
@@ -1645,6 +1751,10 @@ def cmd_verify(a) -> None:
         prev_ui = next((x.get("ui") for x in reversed(b.get("approvals") or []) if x.get("valid")), None)
         same_ui = not ui or (prev_ui is not None and prev_ui.get("evidence_digest") == ui.get("evidence_digest")
                              and not (ui.get("browser") or {}).get("status") == "browser_pending")
+        if ok:  # 승인 근거 증거(실패·통과 쌍)를 일반 이력과 따로 고정(HISTORY_KEEP로 잘려도 유지, 무효화 규칙은 그대로)
+            pinned = pin_evidence(hist, ev, run, now())
+            if pinned:
+                b["verification"]["pinned_evidence"] = pinned
         if ok and prev_status == "approved" and prev_scope == b["verification"]["scope_tree"] and same_ui:
             b["status"] = "approved"  # 같은 코드·같은 UI 증거로 다시 검증: 최종 승인 유지
         elif ok:
@@ -2113,11 +2223,12 @@ def _ui_batch(project: Path, bid: str):
         block("plan_not_approved", "UI Brief는 승인된 구현 계획의 배치에만 만듭니다.")
     prof, uprof, plan = _ui_ctx(project, plan_required=True)
     b = U.batches_by_id(plan).get(bid)
+    ensure_package_batch(project, st, bid)
     if not b or bid not in st["batches"]:
         block("unknown_batch", f"승인된 계획에 {bid} 배치가 없습니다.")
     if b.get("kind") == "non_ui" or not (b.get("screens") or U.comp_list(b, "new") or U.comp_list(b, "reuse")):
         block("not_ui_batch", f"{bid}는 화면·컴포넌트가 없는 배치입니다(UI Brief 대상 아님).")
-    if sha_file(project / PLAN_JSON_REL) != st["plan"]["approved"]["hashes"].get(PLAN_JSON_REL):
+    if not plan_files_ok(project, st["plan"]["approved"]["hashes"], plan_hashes(project)):  # 승인본 또는 진행 중 변경 패키지의 계획 제안
         block("plan_modified", "승인 이후 계획 파일이 바뀌었습니다. UI Brief를 만들지 않았습니다.")
     dinfo = design_info(project)
     if dinfo["level"] not in ("L2", "L3"):
@@ -2718,6 +2829,7 @@ def main() -> None:
     s = add("pause", cmd_pause); s.add_argument("--batch", required=True); s.add_argument("--lock", required=True); s.add_argument("--note", default="")
     s = add("resume", cmd_resume); s.add_argument("--batch"); s.add_argument("--owner", default=""); s.add_argument("--take-over", action="store_true")
     s.add_argument("--accept-changes", action="store_true"); s.add_argument("--retry-failed", action="store_true")
+    s.add_argument("--reverify", action="store_true", help="--retry-failed와 함께: 제출 후 검증만 실패한 배치를 코드 재개 없이 '검증 필요'로 되돌림")
     s.add_argument("--restore-checkpoint", choices=("prev", "rebuild")); s.add_argument("--note", default="")
     s = add("package-finalize", cmd_package_finalize); s.add_argument("--package", required=True)
     s = add("verify", cmd_verify); s.add_argument("--batch", required=True); s.add_argument("--lock"); s.add_argument("--available", default="")

@@ -94,6 +94,14 @@ mkdir -p .claude/skills
 ln -s "$ENGINE/skills/product-start" .claude/skills/product-start
 ```
 
+전체 워크플로를 쓰려면 다섯 Skill을 모두 같은 엔진 경로로 연결합니다(이미 일부만 연결한 프로젝트는 없는 링크만 추가합니다). `/product-change`는 승인된 제품의 변경(디자인만 바뀌는 Type C 포함)에 쓰며, 같은 엔진의 다른 Skill 스크립트를 함께 씁니다.
+
+```bash
+for s in product-start product-init product-design product-build product-change; do
+  [ -e ".claude/skills/$s" ] || ln -s "$ENGINE/skills/$s" ".claude/skills/$s"
+done
+```
+
 심볼릭 링크로 연결하면 Skill의 `reference/`와 `templates/`가 프로젝트 밖에 있게 됩니다. 그래서 엔진 경로 읽기를 허용해야 합니다. `.claude/settings.local.json`(개인 로컬 설정)에 다음을 추가합니다.
 
 ```json
@@ -105,7 +113,7 @@ ln -s "$ENGINE/skills/product-start" .claude/skills/product-start
 ```
 
 - 처음 실행하면 폴더 신뢰 확인 창에 "이 폴더가 작업 공간에 디렉터리 1개를 추가한다"는 경고가 표시됩니다. 경로를 확인한 뒤 **Yes, I trust this folder**를 선택합니다.
-- 링크와 로컬 설정은 각자의 머신 경로를 담고 있으므로 커밋하지 않습니다. 예를 들어 `.git/info/exclude`에 `.claude/skills/product-start`와 `.claude/settings.local.json`을 추가합니다.
+- 링크와 로컬 설정은 각자의 머신 경로를 담고 있으므로 커밋하지 않습니다. 예를 들어 `.git/info/exclude`에 연결한 `.claude/skills/<Skill>` 링크와 `.claude/settings.local.json`을 추가합니다.
 - headless(`claude -p`)에서는 위 설정 대신 `--add-dir /path/to/ai-product-workflow/skills` 옵션을 사용할 수 있습니다.
 
 **B. 사용자 전역**: 모든 프로젝트에서 사용할 수 있습니다. `~/.claude`를 변경합니다.
@@ -251,4 +259,19 @@ docs/build/00-implementation-plan.md 계획 문서(스크립트 생성, 승인 �
 .ai-workflow/build/runs/<배치>/      체크포인트·시작 때 테스트 사본(Git 제외)
 .ai-workflow/build/evidence/        검증·재시도 실행 원본(run.json·리포트·로그, Git 제외. 요약은 build.json)
 ```
+
+## `/product-change`: 승인된 제품의 변경 패키지
+
+이미 승인된 기획·디자인·구현 계획을 바꿀 때 하나의 변경 패키지로 묶어 **사용자 승인 2회**(변경 계약 → 최종 통합)로 반영합니다. 신규 제품의 단계별 승인 경로는 바뀌지 않습니다.
+
+**사전 준비**
+- Skill 연결: `ln -s "$ENGINE/skills/product-change" .claude/skills/product-change` (다른 Skill과 같은 엔진 경로).
+- 기능 켜기: `/product-change` 실행 시 `enable` 계획을 보고 사용자 동의 문장으로 켭니다. 디자인 v2 프로젝트는 디자인 변경 요청 기능도 함께 켜집니다. 기획을 고치기 전에 켭니다.
+
+**언제 쓰는가**
+- 기획 변경(AC 폐기·수정·추가, 정책 변경)과 그에 따른 디자인·구현 변경.
+- 디자인만 바뀌는 범위 한정 변경(Type C: 버튼 위치·크기·스타일, 기능 유지 레이아웃, VD 변경 등). `product_design.py change plan`이 C로 판정하면 이 경로를 안내합니다. Design Direction·Preview 단계 재승인과 디자인 재탐색을 요구하지 않습니다.
+- Type B(경미한 패치)는 `/product-design`의 변경 요청(CR, 확인 1회), D·E는 기존 재검토 경로가 그대로 기본입니다.
+
+자세한 규칙: `skills/product-change/reference/change-package.md`, 기존 프로젝트 적용: `docs/roadmap/change-package-adoption.md`.
 
